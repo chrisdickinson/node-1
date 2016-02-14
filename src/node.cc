@@ -945,6 +945,31 @@ Local<Value> WinapiErrnoException(Isolate* isolate,
 #endif
 
 
+void MicrotaskQueue::Enqueue(v8::Local<v8::Function> microtask) {
+  printf("Enqueue fn\n");
+  HandleScope scope(env_->isolate());
+  Local<Object> process_object = env_->process_object();
+  Local<String> nexttick_string = env_->nexttick_string();
+  Local<Function> nexttick =
+    process_object->Get(nexttick_string).As<Function>();
+  if (!nexttick->IsFunction()) {
+    fprintf(stderr, "process.nextTick assigned to non-function\n");
+    ABORT();
+  }
+  Local<Value> args[] = { microtask };
+  nexttick->Call(process_object, ARRAY_SIZE(args), args);
+}
+
+
+void MicrotaskQueue::Enqueue(v8::MicrotaskCallback, void*) {
+  printf("Enqueue cfn\n");
+}
+
+
+void MicrotaskQueue::Run() {
+}
+
+
 void* ArrayBufferAllocator::Allocate(size_t size) {
   if (env_ == nullptr || !env_->array_buffer_allocator_info()->no_zero_fill())
     return calloc(size, 1);
@@ -4108,6 +4133,9 @@ static void StartNodeInstance(void* arg) {
   Isolate::CreateParams params;
   ArrayBufferAllocator* array_buffer_allocator = new ArrayBufferAllocator();
   params.array_buffer_allocator = array_buffer_allocator;
+
+  MicrotaskQueue* microtask_queue = new MicrotaskQueue();
+  params.microtask_queue = microtask_queue;
 #ifdef NODE_ENABLE_VTUNE_PROFILING
   params.code_event_handler = vTune::GetVtuneCodeEventHandler();
 #endif
@@ -4128,6 +4156,7 @@ static void StartNodeInstance(void* arg) {
     Local<Context> context = Context::New(isolate);
     Environment* env = CreateEnvironment(isolate, context, instance_data);
     array_buffer_allocator->set_env(env);
+    microtask_queue->set_env(env);
     Context::Scope context_scope(context);
 
     isolate->SetAbortOnUncaughtExceptionCallback(

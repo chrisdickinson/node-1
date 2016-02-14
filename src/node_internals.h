@@ -238,6 +238,20 @@ class ArrayBufferAllocator : public v8::ArrayBuffer::Allocator {
   Environment* env_;
 };
 
+class MicrotaskQueue : public v8::Isolate::MicrotaskQueue {
+ public:
+  MicrotaskQueue() : env_(nullptr) { }
+  virtual ~MicrotaskQueue() { }
+  inline void set_env(Environment* env) { env_ = env; }
+
+  virtual void Enqueue(v8::Local<v8::Function>);
+  virtual void Enqueue(v8::MicrotaskCallback, void*);
+  virtual void Run();
+
+ private:
+  Environment* env_;
+};
+
 enum NodeInstanceType { MAIN, WORKER };
 
 class NodeInstanceData {

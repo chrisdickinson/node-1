@@ -138,6 +138,7 @@ namespace node {
   V(name_string, "name")                                                      \
   V(need_imm_cb_string, "_needImmediateCallback")                             \
   V(netmask_string, "netmask")                                                \
+  V(nexttick_string, "nextTick")                                              \
   V(nice_string, "nice")                                                      \
   V(nlink_string, "nlink")                                                    \
   V(npn_buffer_string, "npnBuffer")                                           \
