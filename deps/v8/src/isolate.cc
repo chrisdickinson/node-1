@@ -2642,55 +2642,100 @@ void Isolate::ReportPromiseReject(Handle<JSObject> promise,
 }
 
 
+void Isolate::ExtEnqueueMicrotask(v8::Local<v8::Function> microtask) {
+  EnqueueMicrotask(Utils::OpenHandle(*microtask));
+  microtask_queue()->Enqueue(microtask);
+}
+
+
+void Isolate::ExtEnqueueMicrotask(MicrotaskCallback microtask, void* data) {
+  microtask_queue()->Enqueue(microtask, data);
+}
+
+
 void Isolate::EnqueueMicrotask(Handle<Object> microtask) {
-  DCHECK(microtask->IsJSFunction() || microtask->IsCallHandlerInfo());
-  Handle<FixedArray> queue(heap()->microtask_queue(), this);
-  int num_tasks = pending_microtask_count();
+  if (microtask->IsJSFunction()) {
+    microtask_queue()->Enqueue(
+        Utils::ToLocal(Handle<JSObject>::cast(microtask)).As<Function>());
+  } else {
+    // panic?
+    abort();
+  }
+}
+
+
+#define SET_FIELD_WRAPPED(obj, setter, cdata) do {                \
+    Handle<Object> foreign = FromCData(obj->GetIsolate(), cdata); \
+    (obj)->setter(*foreign);                                      \
+  } while (false)
+
+
+void Isolate::DefaultMicrotaskQueue::Enqueue(v8::MicrotaskCallback microtask, void* data) {
+  HandleScope scope(isolate());
+  Handle<CallHandlerInfo> callback_info =
+      Handle<CallHandlerInfo>::cast(
+          isolate()->factory()->NewStruct(CALL_HANDLER_INFO_TYPE));
+  SET_FIELD_WRAPPED(callback_info, set_callback, microtask);
+  SET_FIELD_WRAPPED(callback_info, set_data, data);
+  isolate()->EnqueueMicrotask(callback_info);
+}
+
+
+void Isolate::DefaultMicrotaskQueue::Enqueue(Local<v8::Function> microtask) {
+  Handle<Object> internal_microtask = Utils::OpenHandle(*microtask);
+  DCHECK(internal_microtask->IsJSFunction() || internal_microtask->IsCallHandlerInfo());
+  Handle<FixedArray> queue(isolate()->heap()->microtask_queue(), isolate());
+  int num_tasks = isolate()->pending_microtask_count();
   DCHECK(num_tasks <= queue->length());
   if (num_tasks == 0) {
-    queue = factory()->NewFixedArray(8);
-    heap()->set_microtask_queue(*queue);
+    queue = isolate()->factory()->NewFixedArray(8);
+    isolate()->heap()->set_microtask_queue(*queue);
   } else if (num_tasks == queue->length()) {
-    queue = factory()->CopyFixedArrayAndGrow(queue, num_tasks);
-    heap()->set_microtask_queue(*queue);
+    queue = isolate()->factory()->CopyFixedArrayAndGrow(queue, num_tasks);
+    isolate()->heap()->set_microtask_queue(*queue);
   }
   DCHECK(queue->get(num_tasks)->IsUndefined());
-  queue->set(num_tasks, *microtask);
-  set_pending_microtask_count(num_tasks + 1);
+  queue->set(num_tasks, *internal_microtask);
+  isolate()->set_pending_microtask_count(num_tasks + 1);
 }
 
 
 void Isolate::RunMicrotasks() {
+  microtask_queue()->Run();
+}
+
+
+void Isolate::DefaultMicrotaskQueue::Run() {
   // Increase call depth to prevent recursive callbacks.
   v8::Isolate::SuppressMicrotaskExecutionScope suppress(
-      reinterpret_cast<v8::Isolate*>(this));
+      reinterpret_cast<v8::Isolate*>(isolate()));
 
-  while (pending_microtask_count() > 0) {
-    HandleScope scope(this);
-    int num_tasks = pending_microtask_count();
-    Handle<FixedArray> queue(heap()->microtask_queue(), this);
+  while (isolate()->pending_microtask_count() > 0) {
+    HandleScope scope(isolate());
+    int num_tasks = isolate()->pending_microtask_count();
+    Handle<FixedArray> queue(isolate()->heap()->microtask_queue(), isolate());
     DCHECK(num_tasks <= queue->length());
-    set_pending_microtask_count(0);
-    heap()->set_microtask_queue(heap()->empty_fixed_array());
+    isolate()->set_pending_microtask_count(0);
+    isolate()->heap()->set_microtask_queue(isolate()->heap()->empty_fixed_array());
 
     for (int i = 0; i < num_tasks; i++) {
-      HandleScope scope(this);
-      Handle<Object> microtask(queue->get(i), this);
+      HandleScope scope(isolate());
+      Handle<Object> microtask(queue->get(i), isolate());
       if (microtask->IsJSFunction()) {
         Handle<JSFunction> microtask_function =
             Handle<JSFunction>::cast(microtask);
-        SaveContext save(this);
-        set_context(microtask_function->context()->native_context());
+        SaveContext save(isolate());
+        isolate()->set_context(microtask_function->context()->native_context());
         MaybeHandle<Object> maybe_exception;
         MaybeHandle<Object> result = Execution::TryCall(
-            this, microtask_function, factory()->undefined_value(), 0, NULL,
+            isolate(), microtask_function, isolate()->factory()->undefined_value(), 0, NULL,
             &maybe_exception);
         // If execution is terminating, just bail out.
         Handle<Object> exception;
         if (result.is_null() && maybe_exception.is_null()) {
           // Clear out any remaining callbacks in the queue.
-          heap()->set_microtask_queue(heap()->empty_fixed_array());
-          set_pending_microtask_count(0);
+          isolate()->heap()->set_microtask_queue(isolate()->heap()->empty_fixed_array());
+          isolate()->set_pending_microtask_count(0);
           return;
         }
       } else {

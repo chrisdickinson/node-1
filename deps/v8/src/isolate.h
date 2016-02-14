@@ -456,6 +456,23 @@ class Isolate {
   };
 
 
+  class DefaultMicrotaskQueue : public v8::Isolate::MicrotaskQueue {
+    public:
+      virtual ~DefaultMicrotaskQueue() {};
+
+      virtual void Enqueue(Local<v8::Function>);
+      virtual void Enqueue(v8::MicrotaskCallback, void*);
+      virtual void Run();
+      Isolate* isolate() const { return isolate_; }
+    private:
+      DefaultMicrotaskQueue(Isolate* isolate) : isolate_(isolate) {
+      };
+      Isolate* isolate_;
+      friend class Isolate;
+      DISALLOW_COPY_AND_ASSIGN(DefaultMicrotaskQueue);
+  };
+
+
   enum AddressId {
 #define DECLARE_ENUM(CamelName, hacker_name) k##CamelName##Address,
     FOR_EACH_ISOLATE_ADDRESS_NAME(DECLARE_ENUM)
@@ -514,6 +531,10 @@ class Isolate {
   static void GlobalTearDown();
 
   void ClearSerializerData();
+
+  v8::Isolate::MicrotaskQueue* CreateDefaultMicrotaskQueue() {
+    return new DefaultMicrotaskQueue(this);
+  }
 
   // Find the PerThread for this particular (isolate, thread) combination
   // If one does not yet exist, return null.
@@ -1064,6 +1085,8 @@ class Isolate {
                            v8::PromiseRejectEvent event);
 
   void EnqueueMicrotask(Handle<Object> microtask);
+  void ExtEnqueueMicrotask(Local<v8::Function> microtask);
+  void ExtEnqueueMicrotask(v8::MicrotaskCallback, void*);
   void RunMicrotasks();
 
   void SetUseCounterCallback(v8::Isolate::UseCounterCallback callback);
@@ -1089,6 +1112,13 @@ class Isolate {
   }
   v8::ArrayBuffer::Allocator* array_buffer_allocator() const {
     return array_buffer_allocator_;
+  }
+
+  void set_microtask_queue(v8::Isolate::MicrotaskQueue* queue) {
+    microtask_queue_ = queue;
+  };
+  v8::Isolate::MicrotaskQueue* microtask_queue() const {
+    return microtask_queue_;
   }
 
   FutexWaitListNode* futex_wait_list_node() { return &futex_wait_list_node_; }
@@ -1335,6 +1365,7 @@ class Isolate {
   List<Object*> partial_snapshot_cache_;
 
   v8::ArrayBuffer::Allocator* array_buffer_allocator_;
+  v8::Isolate::MicrotaskQueue* microtask_queue_;
 
   FutexWaitListNode futex_wait_list_node_;
 

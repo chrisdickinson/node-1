@@ -7153,6 +7153,11 @@ Isolate* Isolate::New(const Isolate::CreateParams& params) {
   Isolate* v8_isolate = reinterpret_cast<Isolate*>(isolate);
   CHECK(params.array_buffer_allocator != NULL);
   isolate->set_array_buffer_allocator(params.array_buffer_allocator);
+  if (params.microtask_queue != NULL) {
+    isolate->set_microtask_queue(params.microtask_queue);
+  } else {
+    isolate->set_microtask_queue(isolate->CreateDefaultMicrotaskQueue());
+  }
   if (params.snapshot_blob != NULL) {
     isolate->set_snapshot_blob(params.snapshot_blob);
   } else {
@@ -7395,19 +7400,15 @@ void Isolate::RunMicrotasks() {
 
 void Isolate::EnqueueMicrotask(Local<Function> microtask) {
   i::Isolate* isolate = reinterpret_cast<i::Isolate*>(this);
-  isolate->EnqueueMicrotask(Utils::OpenHandle(*microtask));
+  isolate->ExtEnqueueMicrotask(microtask);
+  
+  //Utils::OpenHandle(*microtask));
 }
 
 
 void Isolate::EnqueueMicrotask(MicrotaskCallback microtask, void* data) {
   i::Isolate* isolate = reinterpret_cast<i::Isolate*>(this);
-  i::HandleScope scope(isolate);
-  i::Handle<i::CallHandlerInfo> callback_info =
-      i::Handle<i::CallHandlerInfo>::cast(
-          isolate->factory()->NewStruct(i::CALL_HANDLER_INFO_TYPE));
-  SET_FIELD_WRAPPED(callback_info, set_callback, microtask);
-  SET_FIELD_WRAPPED(callback_info, set_data, data);
-  isolate->EnqueueMicrotask(callback_info);
+  isolate->ExtEnqueueMicrotask(microtask, data);
 }
 
 

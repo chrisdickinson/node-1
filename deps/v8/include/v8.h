@@ -5260,6 +5260,8 @@ class V8_EXPORT PersistentHandleVisitor {  // NOLINT
  */
 class V8_EXPORT Isolate {
  public:
+  class MicrotaskQueue;
+
   /**
    * Initial configuration parameters for a new Isolate.
    */
@@ -5271,7 +5273,8 @@ class V8_EXPORT Isolate {
           counter_lookup_callback(NULL),
           create_histogram_callback(NULL),
           add_histogram_sample_callback(NULL),
-          array_buffer_allocator(NULL) {}
+          array_buffer_allocator(NULL),
+          microtask_queue(NULL) {}
 
     /**
      * The optional entry_hook allows the host application to provide the
@@ -5319,6 +5322,11 @@ class V8_EXPORT Isolate {
      * store of ArrayBuffers.
      */
     ArrayBuffer::Allocator* array_buffer_allocator;
+
+    /**
+     * The MicrotaskQueue implementation to use.
+     */
+    MicrotaskQueue* microtask_queue;
   };
 
 
@@ -5380,6 +5388,18 @@ class V8_EXPORT Isolate {
     AllowJavascriptExecutionScope(const AllowJavascriptExecutionScope&);
     AllowJavascriptExecutionScope& operator=(
         const AllowJavascriptExecutionScope&);
+  };
+
+  /**
+   *
+   *
+   */
+  class V8_EXPORT MicrotaskQueue {
+    public:
+      virtual ~MicrotaskQueue() {};
+      virtual void Enqueue(Local<Function>) = 0;
+      virtual void Enqueue(MicrotaskCallback, void*) = 0;
+      virtual void Run() = 0;
   };
 
   /**
