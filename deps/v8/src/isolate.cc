@@ -2654,13 +2654,9 @@ void Isolate::ExtEnqueueMicrotask(MicrotaskCallback microtask, void* data) {
 
 
 void Isolate::EnqueueMicrotask(Handle<Object> microtask) {
-  if (microtask->IsJSFunction()) {
-    microtask_queue()->Enqueue(
-        Utils::ToLocal(Handle<JSObject>::cast(microtask)).As<Function>());
-  } else {
-    // panic?
-    abort();
-  }
+  DCHECK(microtask->IsJSFunction());
+  microtask_queue()->Enqueue(
+      Utils::ToLocal(Handle<JSObject>::cast(microtask)).As<Function>());
 }
 
 
