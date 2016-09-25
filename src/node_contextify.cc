@@ -26,8 +26,10 @@ using v8::Integer;
 using v8::Local;
 using v8::Maybe;
 using v8::MaybeLocal;
+using v8::Module;
 using v8::Name;
 using v8::NamedPropertyHandlerConfiguration;
+using v8::Null;
 using v8::Object;
 using v8::ObjectTemplate;
 using v8::Persistent;
@@ -897,7 +899,7 @@ class ContextifyScript : public BaseObject {
     if (result.IsEmpty()) {
       // Error occurred during execution of the script.
       if (display_errors) {
-        DecorateErrorStack(env, *try_catch);
+        ContextifyScript::DecorateErrorStack(env, *try_catch);
       }
       try_catch->ReThrow();
       return false;
@@ -920,12 +922,177 @@ class ContextifyScript : public BaseObject {
 };
 
 
+class ContextifyModule : public BaseObject {
+ private:
+  Persistent<Module> module_;
+
+ public:
+  static void Init(Environment* env, Local<Object> target) {
+    HandleScope scope(env->isolate());
+    Local<String> class_name =
+        FIXED_ONE_BYTE_STRING(env->isolate(), "ContextifyModule");
+
+    Local<FunctionTemplate> module_tmpl = env->NewFunctionTemplate(New);
+    module_tmpl->InstanceTemplate()->SetInternalFieldCount(1);
+    module_tmpl->SetClassName(class_name);
+    /*
+      mod = new Module(`
+        
+      `, (referringModule, specifier) => {
+        
+      })
+      mod.evaluate(context) -> result
+    */
+    env->SetProtoMethod(module_tmpl, "evaluate", Evaluate);
+    env->SetProtoMethod(module_tmpl, "instantiate", Instantiate);
+
+    target->Set(class_name, module_tmpl->GetFunction());
+    env->set_module_context_constructor_template(module_tmpl);
+  }
+
+
+  static void New(const FunctionCallbackInfo<Value>& args) {
+    Environment* env = Environment::GetCurrent(args);
+
+    if (!args.IsConstructCall()) {
+      return env->ThrowError("Must call vm.Module as a constructor.");
+    }
+
+    ContextifyModule* contextify_module =
+        new ContextifyModule(env, args.This());
+
+    TryCatch try_catch(env->isolate());
+    Local<String> code = args[0]->ToString(env->isolate());
+    Local<String> filename = ContextifyScript::GetFilenameArg(env, args, 1);
+    Local<Integer> lineOffset = ContextifyScript::GetLineOffsetArg(args, 1);
+    Local<Integer> columnOffset = ContextifyScript::GetColumnOffsetArg(args, 1);
+    bool display_errors = ContextifyScript::GetDisplayErrorsArg(env, args, 1);
+    if (try_catch.HasCaught()) {
+      try_catch.ReThrow();
+      return;
+    }
+
+    ScriptOrigin origin(filename, lineOffset, columnOffset);
+    ScriptCompiler::Source source(code, origin);
+
+    MaybeLocal<Module> v8_module = ScriptCompiler::CompileModule(
+      env->isolate(),
+      &source);
+
+    if (v8_module.IsEmpty()) {
+      if (display_errors) {
+        ContextifyScript::DecorateErrorStack(env, try_catch);
+      }
+      try_catch.ReThrow();
+      return;
+    }
+
+    Local<Module> unwrapped_module = v8_module.ToLocalChecked();
+
+    unwrapped_module->SetEmbedderData(args.This());
+    contextify_module->module_.Reset(env->isolate(),
+                                     unwrapped_module);
+  }
+
+
+  ContextifyModule(Environment* env, Local<Object> object)
+      : BaseObject(env, object) {
+    MakeWeak<ContextifyModule>(this);
+  }
+
+
+  ~ContextifyModule() override {
+    module_.Reset();
+  }
+
+
+  static void Instantiate (const FunctionCallbackInfo<Value>& args) {
+    Environment* env = Environment::GetCurrent(args);
+    HandleScope scope(env->isolate());
+
+    if (!args[0]->IsFunction()) {
+      env->ThrowTypeError("expected resolution function");
+      return;
+    }
+
+    Local<Context> context = env->context();
+    Local<Function> resolver = args[0].As<Function>();
+
+    ContextifyModule* wrapped_script;
+    ASSIGN_OR_RETURN_UNWRAP(&wrapped_script, args.Holder());
+    Local<Module> v8_module =
+        PersistentToLocal(env->isolate(), wrapped_script->module_);
+
+    TryCatch try_catch(env->isolate());
+    bool instantiated = v8_module->Instantiate(context, Resolve, resolver);
+
+    if (!instantiated) {
+      if (try_catch.HasCaught()) {
+        try_catch.ReThrow();
+        return;
+      }
+    }
+    args.GetReturnValue().Set(instantiated);
+  }
+
+
+  static void Evaluate (const FunctionCallbackInfo<Value>& args) {
+    Environment* env = Environment::GetCurrent(args);
+    HandleScope scope(env->isolate());
+    ContextifyModule* wrapped_script;
+    ASSIGN_OR_RETURN_UNWRAP(&wrapped_script, args.Holder());
+    Local<Module> v8_module =
+        PersistentToLocal(env->isolate(), wrapped_script->module_);
+
+    // TODO(chrisdickinson): "eval in context"
+    MaybeLocal<Value> val = v8_module->Evaluate(env->context());
+
+    if (val.IsEmpty()) {
+      return;
+    }
+    args.GetReturnValue().Set(val.ToLocalChecked());
+  }
+
+
+  // HostResolveImportedModule
+  static MaybeLocal<Module> Resolve(Local<Context> context,
+                                    Local<String> specifier,
+                                    Local<Module> referrer,
+                                    Local<Value> data) {
+    Environment* env = Environment::GetCurrent(context);
+    Local<Object> contextify_module = referrer->GetEmbedderData().As<Object>();
+    Local<Function> resolver = data.As<Function>();
+
+    Local<Value> args[] = { contextify_module, specifier };
+    MaybeLocal<Value> maybe_result = resolver->Call(Null(env->isolate()), 2, args);
+
+    if (maybe_result.IsEmpty()) {
+      return MaybeLocal<Module>();
+    }
+
+    Local<Value> val = maybe_result.ToLocalChecked();
+    if (!val->IsObject()) {
+      return MaybeLocal<Module>();
+    }
+
+    ContextifyModule* wrapped_script;
+    ASSIGN_OR_RETURN_UNWRAP(&wrapped_script, val.As<Object>(), MaybeLocal<Module>());
+
+    Local<Module> v8_module =
+        PersistentToLocal(env->isolate(), wrapped_script->module_);
+
+    return v8_module;
+  }
+};
+
+
 void InitContextify(Local<Object> target,
                     Local<Value> unused,
                     Local<Context> context) {
   Environment* env = Environment::GetCurrent(context);
   ContextifyContext::Init(env, target);
   ContextifyScript::Init(env, target);
+  ContextifyModule::Init(env, target);
 }
 
 }  // namespace node
