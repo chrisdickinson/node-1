@@ -7,7 +7,7 @@
 #include "src/bit-vector.h"
 #include "src/flags.h"
 #include "src/handles.h"
-#include "src/zone-containers.h"
+#include "src/zone/zone-containers.h"
 
 #include "src/wasm/ast-decoder.h"
 #include "src/wasm/decoder.h"
@@ -68,54 +68,43 @@ struct Value {
   LocalType type;
 };
 
-// An entry on the control stack (i.e. if, block, loop).
+struct Control;
+
+// An entry on the control stack (i.e. if, block, loop, try).
 struct Control {
   const byte* pc;
-  int stack_depth;         // stack height at the beginning of the construct.
-  SsaEnv* end_env;         // end environment for the construct.
-  SsaEnv* false_env;       // false environment (only for if).
-  SsaEnv* catch_env;       // catch environment (only for try with catch).
-  SsaEnv* finish_try_env;  // the environment where a try with finally lives.
-  TFNode* node;            // result node for the construct.
-  LocalType type;          // result type for the construct.
-  bool is_loop;            // true if this is the inner label of a loop.
+  int stack_depth;    // stack height at the beginning of the construct.
+  SsaEnv* end_env;    // end environment for the construct.
+  SsaEnv* false_env;  // false environment (only for if).
+  SsaEnv* catch_env;  // catch environment (only for try).
+  TFNode* node;       // result node for the construct.
+  LocalType type;     // result type for the construct.
+  bool is_loop;       // true if this is the inner label of a loop.
 
   bool is_if() const { return *pc == kExprIf; }
 
-  bool is_try() const {
-    return *pc == kExprTryCatch || *pc == kExprTryCatchFinally ||
-           *pc == kExprTryFinally;
-  }
-
-  bool has_catch() const {
-    return *pc == kExprTryCatch || *pc == kExprTryCatchFinally;
-  }
-
-  bool has_finally() const {
-    return *pc == kExprTryCatchFinally || *pc == kExprTryFinally;
-  }
+  bool is_try() const { return *pc == kExprTry; }
 
   // Named constructors.
   static Control Block(const byte* pc, int stack_depth, SsaEnv* end_env) {
-    return {pc,      stack_depth, end_env, nullptr, nullptr,
+    return {pc,      stack_depth, end_env, nullptr,
             nullptr, nullptr,     kAstEnd, false};
   }
 
   static Control If(const byte* pc, int stack_depth, SsaEnv* end_env,
                     SsaEnv* false_env) {
-    return {pc,      stack_depth, end_env,  false_env, nullptr,
+    return {pc,      stack_depth, end_env,  false_env,
             nullptr, nullptr,     kAstStmt, false};
   }
 
   static Control Loop(const byte* pc, int stack_depth, SsaEnv* end_env) {
-    return {pc,      stack_depth, end_env, nullptr, nullptr,
-            nullptr, nullptr,     kAstEnd, true};
+    return {pc, stack_depth, end_env, nullptr, nullptr, nullptr, kAstEnd, true};
   }
 
   static Control Try(const byte* pc, int stack_depth, SsaEnv* end_env,
-                     SsaEnv* catch_env, SsaEnv* finish_try_env) {
-    return {pc,      stack_depth, end_env, nullptr, catch_env, finish_try_env,
-            nullptr, kAstEnd,     false};
+                     SsaEnv* catch_env) {
+    return {pc,        stack_depth, end_env, nullptr,
+            catch_env, nullptr,     kAstEnd, false};
   }
 };
 
@@ -288,10 +277,7 @@ class WasmDecoder : public Decoder {
       case kExprEnd:
       case kExprBlock:
       case kExprThrow:
-      case kExprTryCatch:
-      case kExprTryCatchFinally:
-      case kExprTryFinally:
-      case kExprFinally:
+      case kExprTry:
       case kExprLoop:
         return 0;
 
@@ -346,8 +332,12 @@ class WasmDecoder : public Decoder {
         FOREACH_SIMPLE_OPCODE(DECLARE_OPCODE_CASE)
         FOREACH_SIMPLE_MEM_OPCODE(DECLARE_OPCODE_CASE)
         FOREACH_ASMJS_COMPAT_OPCODE(DECLARE_OPCODE_CASE)
-        FOREACH_SIMD_OPCODE(DECLARE_OPCODE_CASE)
+        FOREACH_SIMD_0_OPERAND_OPCODE(DECLARE_OPCODE_CASE)
 #undef DECLARE_OPCODE_CASE
+#define DECLARE_OPCODE_CASE(name, opcode, sig) case kExpr##name:
+        FOREACH_SIMD_1_OPERAND_OPCODE(DECLARE_OPCODE_CASE)
+#undef DECLARE_OPCODE_CASE
+        return 1;
       default:
         UNREACHABLE();
         return 0;
@@ -361,7 +351,7 @@ class WasmDecoder : public Decoder {
       FOREACH_STORE_MEM_OPCODE(DECLARE_OPCODE_CASE)
 #undef DECLARE_OPCODE_CASE
       {
-        MemoryAccessOperand operand(this, pc);
+        MemoryAccessOperand operand(this, pc, UINT32_MAX);
         return 1 + operand.length;
       }
       case kExprBr:
@@ -416,7 +406,10 @@ class WasmDecoder : public Decoder {
         ReturnArityOperand operand(this, pc);
         return 1 + operand.length;
       }
-
+#define DECLARE_OPCODE_CASE(name, opcode, sig) case kExpr##name:
+        FOREACH_SIMD_0_OPERAND_OPCODE(DECLARE_OPCODE_CASE) { return 2; }
+        FOREACH_SIMD_1_OPERAND_OPCODE(DECLARE_OPCODE_CASE) { return 3; }
+#undef DECLARE_OPCODE_CASE
       default:
         return 1;
     }
@@ -463,7 +456,7 @@ class WasmFullDecoder : public WasmDecoder {
     }
 
     if (ssa_env_->go()) {
-      TRACE("  @%-6d #xx:%-20s|", startrel(pc_), "ImplicitReturn");
+      TRACE("  @%-8d #xx:%-20s|", startrel(pc_), "ImplicitReturn");
       DoReturn();
       if (failed()) return TraceFailed();
       TRACE("\n");
@@ -574,6 +567,8 @@ class WasmFullDecoder : public WasmDecoder {
         return builder_->Float32Constant(0);
       case kAstF64:
         return builder_->Float64Constant(0);
+      case kAstS128:
+        return builder_->DefaultS128Value();
       default:
         UNREACHABLE();
         return nullptr;
@@ -603,8 +598,13 @@ class WasmFullDecoder : public WasmDecoder {
     }
     // Decode local declarations, if any.
     uint32_t entries = consume_u32v("local decls count");
+    TRACE("local decls count: %u\n", entries);
     while (entries-- > 0 && pc_ < limit_) {
       uint32_t count = consume_u32v("local count");
+      if (count > kMaxNumWasmLocals) {
+        error(pc_ - 1, "local count too large");
+        return;
+      }
       byte code = consume_u8("local type");
       LocalType type;
       switch (code) {
@@ -619,6 +619,9 @@ class WasmFullDecoder : public WasmDecoder {
           break;
         case kLocalF64:
           type = kAstF64;
+          break;
+        case kLocalS128:
+          type = kAstS128;
           break;
         default:
           error(pc_ - 1, "invalid local type");
@@ -641,31 +644,14 @@ class WasmFullDecoder : public WasmDecoder {
     while (true) {  // decoding loop.
       unsigned len = 1;
       WasmOpcode opcode = static_cast<WasmOpcode>(*pc_);
-      TRACE("  @%-6d #%02x:%-20s|", startrel(pc_), opcode,
-            WasmOpcodes::ShortOpcodeName(opcode));
+      if (!WasmOpcodes::IsPrefixOpcode(opcode)) {
+        TRACE("  @%-8d #%02x:%-20s|", startrel(pc_), opcode,
+              WasmOpcodes::ShortOpcodeName(opcode));
+      }
 
       FunctionSig* sig = WasmOpcodes::Signature(opcode);
       if (sig) {
-        // Fast case of a simple operator.
-        TFNode* node;
-        switch (sig->parameter_count()) {
-          case 1: {
-            Value val = Pop(0, sig->GetParam(0));
-            node = BUILD(Unop, opcode, val.node, position());
-            break;
-          }
-          case 2: {
-            Value rval = Pop(1, sig->GetParam(1));
-            Value lval = Pop(0, sig->GetParam(0));
-            node = BUILD(Binop, opcode, lval.node, rval.node, position());
-            break;
-          }
-          default:
-            UNREACHABLE();
-            node = nullptr;
-            break;
-        }
-        Push(GetReturnType(sig), node);
+        BuildSimpleOperator(opcode, sig);
       } else {
         // Complex bytecode.
         switch (opcode) {
@@ -681,37 +667,17 @@ class WasmFullDecoder : public WasmDecoder {
           }
           case kExprThrow: {
             CHECK_PROTOTYPE_OPCODE(wasm_eh_prototype);
-            Pop(0, kAstI32);
-
-            // TODO(jpp): start exception propagation.
+            Value value = Pop(0, kAstI32);
+            BUILD(Throw, value.node);
             break;
           }
-          case kExprTryCatch: {
+          case kExprTry: {
             CHECK_PROTOTYPE_OPCODE(wasm_eh_prototype);
             SsaEnv* outer_env = ssa_env_;
             SsaEnv* try_env = Steal(outer_env);
             SsaEnv* catch_env = Split(try_env);
-            PushTry(outer_env, catch_env, nullptr);
-            SetEnv("try_catch:start", try_env);
-            break;
-          }
-          case kExprTryCatchFinally: {
-            CHECK_PROTOTYPE_OPCODE(wasm_eh_prototype);
-            SsaEnv* outer_env = ssa_env_;
-            SsaEnv* try_env = Steal(outer_env);
-            SsaEnv* catch_env = Split(try_env);
-            SsaEnv* finally_env = Split(try_env);
-            PushTry(finally_env, catch_env, outer_env);
-            SetEnv("try_catch_finally:start", try_env);
-            break;
-          }
-          case kExprTryFinally: {
-            CHECK_PROTOTYPE_OPCODE(wasm_eh_prototype);
-            SsaEnv* outer_env = ssa_env_;
-            SsaEnv* try_env = Steal(outer_env);
-            SsaEnv* finally_env = Split(outer_env);
-            PushTry(finally_env, nullptr, outer_env);
-            SetEnv("try_finally:start", try_env);
+            PushTry(outer_env, catch_env);
+            SetEnv("try:start", try_env);
             break;
           }
           case kExprCatch: {
@@ -725,8 +691,8 @@ class WasmFullDecoder : public WasmDecoder {
             }
 
             Control* c = &control_.back();
-            if (!c->has_catch()) {
-              error(pc_, "catch does not match a try with catch");
+            if (!c->is_try()) {
+              error(pc_, "catch does not match a try");
               break;
             }
 
@@ -750,50 +716,6 @@ class WasmFullDecoder : public WasmDecoder {
             }
 
             PopUpTo(c->stack_depth);
-
-            break;
-          }
-          case kExprFinally: {
-            CHECK_PROTOTYPE_OPCODE(wasm_eh_prototype);
-            if (control_.empty()) {
-              error(pc_, "finally does not match a any try");
-              break;
-            }
-
-            Control* c = &control_.back();
-            if (c->has_catch() && c->catch_env != nullptr) {
-              error(pc_, "missing catch for try with catch and finally");
-              break;
-            }
-
-            if (!c->has_finally()) {
-              error(pc_, "finally does not match a try with finally");
-              break;
-            }
-
-            if (c->finish_try_env == nullptr) {
-              error(pc_, "finally already present for try with finally");
-              break;
-            }
-
-            // ssa_env_ is either the env for either the try or the catch, but
-            // it does not matter: either way we need to direct the control flow
-            // to the end_env, which is the env for the finally.
-            // c->finish_try_env is the the environment enclosing the try block.
-            Goto(ssa_env_, c->end_env);
-
-            PopUpTo(c->stack_depth);
-
-            // The current environment becomes end_env, and finish_try_env
-            // becomes the new end_env. This ensures that any control flow
-            // leaving a try block up to now will do so by branching to the
-            // finally block. Setting the end_env to be finish_try_env ensures
-            // that kExprEnd below can handle the try block as it would any
-            // other block construct.
-            SsaEnv* finally_env = c->end_env;
-            c->end_env = c->finish_try_env;
-            SetEnv("finally:begin", finally_env);
-            c->finish_try_env = nullptr;
 
             break;
           }
@@ -847,7 +769,7 @@ class WasmFullDecoder : public WasmDecoder {
           }
           case kExprEnd: {
             if (control_.empty()) {
-              error(pc_, "end does not match any if or block");
+              error(pc_, "end does not match any if, try, or block");
               break;
             }
             const char* name = "block:end";
@@ -855,7 +777,7 @@ class WasmFullDecoder : public WasmDecoder {
             Value val = PopUpTo(c->stack_depth);
             if (c->is_loop) {
               // Loops always push control in pairs.
-              control_.pop_back();
+              PopControl();
               c = &control_.back();
               name = "loop:end";
             } else if (c->is_if()) {
@@ -871,28 +793,21 @@ class WasmFullDecoder : public WasmDecoder {
             } else if (c->is_try()) {
               name = "try:end";
 
-              // try blocks do not yield a value.
-              val = {val.pc, nullptr, kAstStmt};
-
-              // validate that catch/finally were seen.
+              // validate that catch was seen.
               if (c->catch_env != nullptr) {
-                error(pc_, "missing catch in try with catch");
-                break;
-              }
-
-              if (c->finish_try_env != nullptr) {
-                error(pc_, "missing finally in try with finally");
+                error(pc_, "missing catch in try");
                 break;
               }
             }
 
             if (ssa_env_->go()) {
+              // Adds a fallthrough edge to the next control block.
               MergeInto(c->end_env, &c->node, &c->type, val);
             }
             SetEnv(name, c->end_env);
             stack_.resize(c->stack_depth);
             Push(c->type, c->node);
-            control_.pop_back();
+            PopControl();
             break;
           }
           case kExprSelect: {
@@ -937,7 +852,7 @@ class WasmFullDecoder : public WasmDecoder {
             Value cond = Pop(operand.arity, kAstI32);
             Value val = {pc_, nullptr, kAstStmt};
             if (operand.arity == 1) val = Pop();
-            if (Validate(pc_, operand, control_)) {
+            if (ok() && Validate(pc_, operand, control_)) {
               SsaEnv* fenv = ssa_env_;
               SsaEnv* tenv = Split(fenv);
               fenv->SetNotMerged();
@@ -1143,7 +1058,14 @@ class WasmFullDecoder : public WasmDecoder {
           case kExprF64StoreMem:
             len = DecodeStoreMem(kAstF64, MachineType::Float64());
             break;
-
+          case kExprGrowMemory:
+            if (module_->origin != kAsmJsOrigin) {
+              Value val = Pop(0, kAstI32);
+              Push(kAstI32, BUILD(GrowMemory, val.node));
+            } else {
+              error("grow_memory is not supported for asmjs modules");
+            }
+            break;
           case kExprMemorySize:
             Push(kAstI32, BUILD(MemSize, 0));
             break;
@@ -1187,12 +1109,22 @@ class WasmFullDecoder : public WasmDecoder {
             len++;
             byte simd_index = *(pc_ + 1);
             opcode = static_cast<WasmOpcode>(opcode << 8 | simd_index);
-            DecodeSimdOpcode(opcode);
+            TRACE("  @%-4d #%02x #%02x:%-20s|", startrel(pc_), kSimdPrefix,
+                  simd_index, WasmOpcodes::ShortOpcodeName(opcode));
+            len += DecodeSimdOpcode(opcode);
             break;
           }
           default:
-            error("Invalid opcode");
-            return;
+            // Deal with special asmjs opcodes.
+            if (module_->origin == kAsmJsOrigin) {
+              sig = WasmOpcodes::AsmjsSignature(opcode);
+              if (sig) {
+                BuildSimpleOperator(opcode, sig);
+              }
+            } else {
+              error("Invalid opcode");
+              return;
+            }
         }
       }  // end complex bytecode
 
@@ -1201,6 +1133,9 @@ class WasmFullDecoder : public WasmDecoder {
         for (size_t i = 0; i < stack_.size(); ++i) {
           Value& val = stack_[i];
           WasmOpcode opcode = static_cast<WasmOpcode>(*val.pc);
+          if (WasmOpcodes::IsPrefixOpcode(opcode)) {
+            opcode = static_cast<WasmOpcode>(opcode << 8 | *(val.pc + 1));
+          }
           PrintF(" %c@%d:%s", WasmOpcodes::ShortNameOf(val.type),
                  static_cast<int>(val.pc - start_),
                  WasmOpcodes::ShortOpcodeName(opcode));
@@ -1273,14 +1208,17 @@ class WasmFullDecoder : public WasmDecoder {
     control_.emplace_back(Control::If(pc_, stack_depth, end_env, false_env));
   }
 
-  void PushTry(SsaEnv* end_env, SsaEnv* catch_env, SsaEnv* finish_try_env) {
+  void PushTry(SsaEnv* end_env, SsaEnv* catch_env) {
     const int stack_depth = static_cast<int>(stack_.size());
-    control_.emplace_back(
-        Control::Try(pc_, stack_depth, end_env, catch_env, finish_try_env));
+    control_.emplace_back(Control::Try(pc_, stack_depth, end_env, catch_env));
   }
 
+  void PopControl() { control_.pop_back(); }
+
   int DecodeLoadMem(LocalType type, MachineType mem_type) {
-    MemoryAccessOperand operand(this, pc_);
+    MemoryAccessOperand operand(this, pc_,
+                                ElementSizeLog2Of(mem_type.representation()));
+
     Value index = Pop(0, kAstI32);
     TFNode* node = BUILD(LoadMem, type, mem_type, index.node, operand.offset,
                          operand.alignment, position());
@@ -1289,7 +1227,8 @@ class WasmFullDecoder : public WasmDecoder {
   }
 
   int DecodeStoreMem(LocalType type, MachineType mem_type) {
-    MemoryAccessOperand operand(this, pc_);
+    MemoryAccessOperand operand(this, pc_,
+                                ElementSizeLog2Of(mem_type.representation()));
     Value val = Pop(1, type);
     Value index = Pop(0, kAstI32);
     BUILD(StoreMem, mem_type, index.node, operand.offset, operand.alignment,
@@ -1298,15 +1237,36 @@ class WasmFullDecoder : public WasmDecoder {
     return 1 + operand.length;
   }
 
-  void DecodeSimdOpcode(WasmOpcode opcode) {
-    FunctionSig* sig = WasmOpcodes::Signature(opcode);
-    compiler::NodeVector inputs(sig->parameter_count(), zone_);
-    for (size_t i = sig->parameter_count(); i > 0; i--) {
-      Value val = Pop(static_cast<int>(i - 1), sig->GetParam(i - 1));
-      inputs[i - 1] = val.node;
+  unsigned DecodeSimdOpcode(WasmOpcode opcode) {
+    unsigned len = 0;
+    switch (opcode) {
+      case kExprI32x4ExtractLane: {
+        uint8_t lane = this->checked_read_u8(pc_, 2, "lane number");
+        if (lane < 0 || lane > 3) {
+          error(pc_, pc_ + 2, "invalid extract lane value");
+        }
+        TFNode* input = Pop(0, LocalType::kSimd128).node;
+        TFNode* node = BUILD(SimdExtractLane, opcode, lane, input);
+        Push(LocalType::kWord32, node);
+        len++;
+        break;
+      }
+      default: {
+        FunctionSig* sig = WasmOpcodes::Signature(opcode);
+        if (sig != nullptr) {
+          compiler::NodeVector inputs(sig->parameter_count(), zone_);
+          for (size_t i = sig->parameter_count(); i > 0; i--) {
+            Value val = Pop(static_cast<int>(i - 1), sig->GetParam(i - 1));
+            inputs[i - 1] = val.node;
+          }
+          TFNode* node = BUILD(SimdOp, opcode, inputs);
+          Push(GetReturnType(sig), node);
+        } else {
+          error(pc_, pc_, "invalid simd opcode");
+        }
+      }
     }
-    TFNode* node = BUILD(SimdOp, opcode, inputs);
-    Push(GetReturnType(sig), node);
+    return len;
   }
 
   void DoReturn() {
@@ -1375,7 +1335,7 @@ class WasmFullDecoder : public WasmDecoder {
 
   int startrel(const byte* ptr) { return static_cast<int>(ptr - start_); }
 
-  void BreakTo(Control* block, Value& val) {
+  void BreakTo(Control* block, const Value& val) {
     if (block->is_loop) {
       // This is the inner loop block, which does not have a value.
       Goto(ssa_env_, block->end_env);
@@ -1385,7 +1345,8 @@ class WasmFullDecoder : public WasmDecoder {
     }
   }
 
-  void MergeInto(SsaEnv* target, TFNode** node, LocalType* type, Value& val) {
+  void MergeInto(SsaEnv* target, TFNode** node, LocalType* type,
+                 const Value& val) {
     if (!ssa_env_->go()) return;
     DCHECK_NE(kAstEnd, val.type);
 
@@ -1630,16 +1591,14 @@ class WasmFullDecoder : public WasmDecoder {
         case kExprLoop:
         case kExprIf:
         case kExprBlock:
-        case kExprTryCatch:
-        case kExprTryCatchFinally:
-        case kExprTryFinally:
+        case kExprTry:
           depth++;
           DCHECK_EQ(1, OpcodeLength(pc));
           break;
         case kExprSetLocal: {
           LocalIndexOperand operand(this, pc);
           if (assigned->length() > 0 &&
-              static_cast<int>(operand.index) < assigned->length()) {
+              operand.index < static_cast<uint32_t>(assigned->length())) {
             // Unverified code might have an out-of-bounds index.
             assigned->Add(operand.index);
           }
@@ -1664,11 +1623,33 @@ class WasmFullDecoder : public WasmDecoder {
     DCHECK_EQ(pc_ - start_, offset);  // overflows cannot happen
     return offset;
   }
+
+  inline void BuildSimpleOperator(WasmOpcode opcode, FunctionSig* sig) {
+    TFNode* node;
+    switch (sig->parameter_count()) {
+      case 1: {
+        Value val = Pop(0, sig->GetParam(0));
+        node = BUILD(Unop, opcode, val.node, position());
+        break;
+      }
+      case 2: {
+        Value rval = Pop(1, sig->GetParam(1));
+        Value lval = Pop(0, sig->GetParam(0));
+        node = BUILD(Binop, opcode, lval.node, rval.node, position());
+        break;
+      }
+      default:
+        UNREACHABLE();
+        node = nullptr;
+        break;
+    }
+    Push(GetReturnType(sig), node);
+  }
 };
 
 bool DecodeLocalDecls(AstLocalDecls& decls, const byte* start,
                       const byte* end) {
-  base::AccountingAllocator allocator;
+  AccountingAllocator allocator;
   Zone tmp(&allocator);
   FunctionBody body = {nullptr, nullptr, nullptr, start, end};
   WasmFullDecoder decoder(&tmp, nullptr, body);
@@ -1686,7 +1667,7 @@ BytecodeIterator::BytecodeIterator(const byte* start, const byte* end,
   }
 }
 
-DecodeResult VerifyWasmCode(base::AccountingAllocator* allocator,
+DecodeResult VerifyWasmCode(AccountingAllocator* allocator,
                             FunctionBody& body) {
   Zone zone(allocator);
   WasmFullDecoder decoder(&zone, nullptr, body);
@@ -1694,8 +1675,8 @@ DecodeResult VerifyWasmCode(base::AccountingAllocator* allocator,
   return decoder.toResult<DecodeStruct*>(nullptr);
 }
 
-DecodeResult BuildTFGraph(base::AccountingAllocator* allocator,
-                          TFBuilder* builder, FunctionBody& body) {
+DecodeResult BuildTFGraph(AccountingAllocator* allocator, TFBuilder* builder,
+                          FunctionBody& body) {
   Zone zone(allocator);
   WasmFullDecoder decoder(&zone, builder, body);
   decoder.Decode();
@@ -1713,12 +1694,12 @@ unsigned OpcodeArity(const byte* pc, const byte* end) {
 }
 
 void PrintAstForDebugging(const byte* start, const byte* end) {
-  base::AccountingAllocator allocator;
+  AccountingAllocator allocator;
   OFStream os(stdout);
   PrintAst(&allocator, FunctionBodyForTesting(start, end), os, nullptr);
 }
 
-bool PrintAst(base::AccountingAllocator* allocator, const FunctionBody& body,
+bool PrintAst(AccountingAllocator* allocator, const FunctionBody& body,
               std::ostream& os,
               std::vector<std::tuple<uint32_t, int, int>>* offset_table) {
   Zone zone(allocator);
@@ -1781,9 +1762,7 @@ bool PrintAst(base::AccountingAllocator* allocator, const FunctionBody& body,
       case kExprElse:
       case kExprLoop:
       case kExprBlock:
-      case kExprTryCatch:
-      case kExprTryCatchFinally:
-      case kExprTryFinally:
+      case kExprTry:
         os << "   // @" << i.pc_offset();
         control_depth++;
         break;

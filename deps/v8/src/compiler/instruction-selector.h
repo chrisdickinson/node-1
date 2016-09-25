@@ -8,11 +8,11 @@
 #include <map>
 
 #include "src/compiler/common-operator.h"
-#include "src/compiler/instruction.h"
 #include "src/compiler/instruction-scheduler.h"
+#include "src/compiler/instruction.h"
 #include "src/compiler/machine-operator.h"
 #include "src/compiler/node.h"
-#include "src/zone-containers.h"
+#include "src/zone/zone-containers.h"
 
 namespace v8 {
 namespace internal {
@@ -48,13 +48,17 @@ class InstructionSelector final {
   class Features;
 
   enum SourcePositionMode { kCallSourcePositions, kAllSourcePositions };
+  enum EnableScheduling { kDisableScheduling, kEnableScheduling };
 
   InstructionSelector(
       Zone* zone, size_t node_count, Linkage* linkage,
       InstructionSequence* sequence, Schedule* schedule,
       SourcePositionTable* source_positions, Frame* frame,
       SourcePositionMode source_position_mode = kCallSourcePositions,
-      Features features = SupportedFeatures());
+      Features features = SupportedFeatures(),
+      EnableScheduling enable_scheduling = FLAG_turbo_instruction_scheduling
+                                               ? kEnableScheduling
+                                               : kDisableScheduling);
 
   // Visit code for the entire graph with the included schedule.
   void SelectInstructions();
@@ -199,9 +203,20 @@ class InstructionSelector final {
  private:
   friend class OperandGenerator;
 
+  bool UseInstructionScheduling() const {
+    return (enable_scheduling_ == kEnableScheduling) &&
+           InstructionScheduler::SchedulerSupported();
+  }
+
   void EmitTableSwitch(const SwitchInfo& sw, InstructionOperand& index_operand);
   void EmitLookupSwitch(const SwitchInfo& sw,
                         InstructionOperand& value_operand);
+
+  void TryRename(InstructionOperand* op);
+  int GetRename(int virtual_register);
+  void SetRename(const Node* node, const Node* rename);
+  void UpdateRenames(Instruction* instruction);
+  void UpdateRenamesInPhi(PhiInstruction* phi);
 
   // Inform the instruction selection that {node} was just defined.
   void MarkAsDefined(Node* node);
@@ -227,6 +242,9 @@ class InstructionSelector final {
   }
   void MarkAsFloat64(Node* node) {
     MarkAsRepresentation(MachineRepresentation::kFloat64, node);
+  }
+  void MarkAsSimd128(Node* node) {
+    MarkAsRepresentation(MachineRepresentation::kSimd128, node);
   }
   void MarkAsReference(Node* node) {
     MarkAsRepresentation(MachineRepresentation::kTagged, node);
@@ -276,6 +294,8 @@ class InstructionSelector final {
 
 #define DECLARE_GENERATOR(x) void Visit##x(Node* node);
   MACHINE_OP_LIST(DECLARE_GENERATOR)
+  MACHINE_SIMD_RETURN_NUM_OP_LIST(DECLARE_GENERATOR)
+  MACHINE_SIMD_RETURN_SIMD_OP_LIST(DECLARE_GENERATOR)
 #undef DECLARE_GENERATOR
 
   void VisitFinishRegion(Node* node);
@@ -327,7 +347,9 @@ class InstructionSelector final {
   BoolVector used_;
   IntVector effect_level_;
   IntVector virtual_registers_;
+  IntVector virtual_register_rename_;
   InstructionScheduler* scheduler_;
+  EnableScheduling enable_scheduling_;
   Frame* frame_;
 };
 

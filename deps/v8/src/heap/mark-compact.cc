@@ -567,6 +567,7 @@ void MarkCompactCollector::EnsureSweepingCompleted() {
 }
 
 bool MarkCompactCollector::Sweeper::IsSweepingCompleted() {
+  DCHECK(FLAG_concurrent_sweeping);
   while (pending_sweeper_tasks_semaphore_.WaitFor(
       base::TimeDelta::FromSeconds(0))) {
     num_sweeping_tasks_.Increment(-1);
@@ -600,7 +601,7 @@ void MarkCompactCollector::ComputeEvacuationHeuristics(
   // For memory reducing and optimize for memory mode we directly define both
   // constants.
   const int kTargetFragmentationPercentForReduceMemory = 20;
-  const int kMaxEvacuatedBytesForReduceMemory = 12 * Page::kPageSize;
+  const int kMaxEvacuatedBytesForReduceMemory = 12 * MB;
   const int kTargetFragmentationPercentForOptimizeMemory = 20;
   const int kMaxEvacuatedBytesForOptimizeMemory = 6 * MB;
 
@@ -608,10 +609,10 @@ void MarkCompactCollector::ComputeEvacuationHeuristics(
   // defaults to start and switch to a trace-based (using compaction speed)
   // approach as soon as we have enough samples.
   const int kTargetFragmentationPercent = 70;
-  const int kMaxEvacuatedBytes = 4 * Page::kPageSize;
+  const int kMaxEvacuatedBytes = 4 * MB;
   // Time to take for a single area (=payload of page). Used as soon as there
   // exist enough compaction speed samples.
-  const int kTargetMsPerArea = 1;
+  const float kTargetMsPerArea = .5;
 
   if (heap()->ShouldReduceMemory()) {
     *target_fragmentation_percent = kTargetFragmentationPercentForReduceMemory;
@@ -801,6 +802,7 @@ void MarkCompactCollector::Prepare() {
   // Clear marking bits if incremental marking is aborted.
   if (was_marked_incrementally_ && heap_->ShouldAbortIncrementalMarking()) {
     heap()->incremental_marking()->Stop();
+    heap()->incremental_marking()->AbortBlackAllocation();
     ClearMarkbits();
     AbortWeakCollections();
     AbortWeakCells();
@@ -2206,6 +2208,11 @@ void MarkCompactCollector::SetEmbedderHeapTracer(EmbedderHeapTracer* tracer) {
   embedder_heap_tracer_ = tracer;
 }
 
+bool MarkCompactCollector::RequiresImmediateWrapperProcessing() {
+  const size_t kTooManyWrappers = 16000;
+  return wrappers_to_trace_.size() > kTooManyWrappers;
+}
+
 void MarkCompactCollector::RegisterWrappersWithEmbedderHeapTracer() {
   DCHECK(UsingEmbedderHeapTracer());
   if (wrappers_to_trace_.empty()) {
@@ -3221,7 +3228,7 @@ int MarkCompactCollector::NumberOfParallelCompactionTasks(int pages,
   // The number of parallel compaction tasks is limited by:
   // - #evacuation pages
   // - (#cores - 1)
-  const double kTargetCompactionTimeInMs = 1;
+  const double kTargetCompactionTimeInMs = .5;
   const int kNumSweepingTasks = 3;
 
   double compaction_speed =
@@ -3700,20 +3707,10 @@ int NumberOfPointerUpdateTasks(int pages) {
 
 template <PointerDirection direction>
 void UpdatePointersInParallel(Heap* heap, base::Semaphore* semaphore) {
-  // Work-around bug in clang-3.4
-  // https://github.com/nodejs/node/issues/8323
-  struct MemoryChunkVisitor {
-    PageParallelJob<PointerUpdateJobTraits<direction> >& job_;
-    MemoryChunkVisitor(PageParallelJob<PointerUpdateJobTraits<direction> >& job)
-      : job_(job) {}
-    void operator()(MemoryChunk* chunk) {
-      job_.AddPage(chunk, 0);
-    }
-  };
-
   PageParallelJob<PointerUpdateJobTraits<direction> > job(
       heap, heap->isolate()->cancelable_task_manager(), semaphore);
-  RememberedSet<direction>::IterateMemoryChunks(heap, MemoryChunkVisitor(job));
+  RememberedSet<direction>::IterateMemoryChunks(
+      heap, [&job](MemoryChunk* chunk) { job.AddPage(chunk, 0); });
   int num_pages = job.NumberOfPages();
   int num_tasks = NumberOfPointerUpdateTasks(num_pages);
   job.Run(num_tasks, [](int i) { return 0; });

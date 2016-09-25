@@ -318,8 +318,7 @@ void Builtins::Generate_StringPrototypeCharAt(CodeStubAssembler* assembler) {
     assembler->Bind(&if_positionisnotsmi);
     {
       // Convert the {position} to an Integer via the ToIntegerStub.
-      Callable callable = CodeFactory::ToInteger(assembler->isolate());
-      Node* index = assembler->CallStub(callable, context, position);
+      Node* index = assembler->ToInteger(context, position);
 
       // Check if the resulting {index} is now a Smi.
       Label if_indexissmi(assembler, Label::kDeferred),
@@ -413,8 +412,7 @@ void Builtins::Generate_StringPrototypeCharCodeAt(
     assembler->Bind(&if_positionisnotsmi);
     {
       // Convert the {position} to an Integer via the ToIntegerStub.
-      Callable callable = CodeFactory::ToInteger(assembler->isolate());
-      Node* index = assembler->CallStub(callable, context, position);
+      Node* index = assembler->ToInteger(context, position);
 
       // Check if the resulting {index} is now a Smi.
       Label if_indexissmi(assembler, Label::kDeferred),
@@ -477,6 +475,100 @@ void Builtins::Generate_StringPrototypeCharCodeAt(
   assembler->Return(result);
 }
 
+// ES6 section 21.1.3.9
+// String.prototype.lastIndexOf ( searchString [ , position ] )
+BUILTIN(StringPrototypeLastIndexOf) {
+  HandleScope handle_scope(isolate);
+  return String::LastIndexOf(isolate, args.receiver(),
+                             args.atOrUndefined(isolate, 1),
+                             args.atOrUndefined(isolate, 2));
+}
+
+// ES6 section 21.1.3.10 String.prototype.localeCompare ( that )
+//
+// This function is implementation specific.  For now, we do not
+// do anything locale specific.
+// If internationalization is enabled, then i18n.js will override this function
+// and provide the proper functionality, so this is just a fallback.
+BUILTIN(StringPrototypeLocaleCompare) {
+  HandleScope handle_scope(isolate);
+  DCHECK_EQ(2, args.length());
+
+  TO_THIS_STRING(str1, "String.prototype.localeCompare");
+  Handle<String> str2;
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
+      isolate, str2, Object::ToString(isolate, args.at<Object>(1)));
+
+  if (str1.is_identical_to(str2)) return Smi::FromInt(0);  // Equal.
+  int str1_length = str1->length();
+  int str2_length = str2->length();
+
+  // Decide trivial cases without flattening.
+  if (str1_length == 0) {
+    if (str2_length == 0) return Smi::FromInt(0);  // Equal.
+    return Smi::FromInt(-str2_length);
+  } else {
+    if (str2_length == 0) return Smi::FromInt(str1_length);
+  }
+
+  int end = str1_length < str2_length ? str1_length : str2_length;
+
+  // No need to flatten if we are going to find the answer on the first
+  // character. At this point we know there is at least one character
+  // in each string, due to the trivial case handling above.
+  int d = str1->Get(0) - str2->Get(0);
+  if (d != 0) return Smi::FromInt(d);
+
+  str1 = String::Flatten(str1);
+  str2 = String::Flatten(str2);
+
+  DisallowHeapAllocation no_gc;
+  String::FlatContent flat1 = str1->GetFlatContent();
+  String::FlatContent flat2 = str2->GetFlatContent();
+
+  for (int i = 0; i < end; i++) {
+    if (flat1.Get(i) != flat2.Get(i)) {
+      return Smi::FromInt(flat1.Get(i) - flat2.Get(i));
+    }
+  }
+
+  return Smi::FromInt(str1_length - str2_length);
+}
+
+// ES6 section 21.1.3.12 String.prototype.normalize ( [form] )
+//
+// Simply checks the argument is valid and returns the string itself.
+// If internationalization is enabled, then i18n.js will override this function
+// and provide the proper functionality, so this is just a fallback.
+BUILTIN(StringPrototypeNormalize) {
+  HandleScope handle_scope(isolate);
+  TO_THIS_STRING(string, "String.prototype.normalize");
+
+  Handle<Object> form_input = args.atOrUndefined(isolate, 1);
+  if (form_input->IsUndefined(isolate)) return *string;
+
+  Handle<String> form;
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, form,
+                                     Object::ToString(isolate, form_input));
+
+  if (!(String::Equals(form,
+                       isolate->factory()->NewStringFromStaticChars("NFC")) ||
+        String::Equals(form,
+                       isolate->factory()->NewStringFromStaticChars("NFD")) ||
+        String::Equals(form,
+                       isolate->factory()->NewStringFromStaticChars("NFKC")) ||
+        String::Equals(form,
+                       isolate->factory()->NewStringFromStaticChars("NFKD")))) {
+    Handle<String> valid_forms =
+        isolate->factory()->NewStringFromStaticChars("NFC, NFD, NFKC, NFKD");
+    THROW_NEW_ERROR_RETURN_FAILURE(
+        isolate,
+        NewRangeError(MessageTemplate::kNormalizationForm, valid_forms));
+  }
+
+  return *string;
+}
+
 // ES6 section 21.1.3.25 String.prototype.toString ()
 void Builtins::Generate_StringPrototypeToString(CodeStubAssembler* assembler) {
   typedef compiler::Node Node;
@@ -520,6 +612,60 @@ void Builtins::Generate_StringPrototypeValueOf(CodeStubAssembler* assembler) {
   Node* result = assembler->ToThisValue(
       context, receiver, PrimitiveType::kString, "String.prototype.valueOf");
   assembler->Return(result);
+}
+
+BUILTIN(StringPrototypeIterator) {
+  HandleScope scope(isolate);
+  TO_THIS_STRING(object, "String.prototype[Symbol.iterator]");
+
+  Handle<String> string;
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, string,
+                                     Object::ToString(isolate, object));
+
+  return *isolate->factory()->NewJSStringIterator(string);
+}
+
+BUILTIN(StringIteratorPrototypeNext) {
+  HandleScope scope(isolate);
+
+  if (!args.receiver()->IsJSStringIterator()) {
+    Handle<String> reason = isolate->factory()->NewStringFromAsciiChecked(
+        "String Iterator.prototype.next");
+    THROW_NEW_ERROR_RETURN_FAILURE(
+        isolate,
+        NewTypeError(MessageTemplate::kIncompatibleMethodReceiver, reason));
+  }
+  Handle<JSStringIterator> iterator =
+      Handle<JSStringIterator>::cast(args.receiver());
+  Handle<String> string(iterator->string());
+
+  int position = iterator->index();
+  int length = string->length();
+
+  if (position < length) {
+    uint16_t lead = string->Get(position);
+    if (lead >= 0xD800 && lead <= 0xDBFF && position + 1 < length) {
+      uint16_t trail = string->Get(position + 1);
+      if (V8_LIKELY(trail >= 0xDC00 && trail <= 0xDFFF)) {
+        // Return surrogate pair code units
+        iterator->set_index(position + 2);
+        Handle<String> value =
+            isolate->factory()->NewSurrogatePairString(lead, trail);
+        return *isolate->factory()->NewJSIteratorResult(value, false);
+      }
+    }
+
+    // Return single code unit
+    iterator->set_index(position + 1);
+    Handle<String> value =
+        isolate->factory()->LookupSingleCharacterStringFromCode(lead);
+    return *isolate->factory()->NewJSIteratorResult(value, false);
+  }
+
+  iterator->set_string(isolate->heap()->empty_string());
+
+  return *isolate->factory()->NewJSIteratorResult(
+      isolate->factory()->undefined_value(), true);
 }
 
 }  // namespace internal

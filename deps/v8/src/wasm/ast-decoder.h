@@ -21,6 +21,8 @@ class WasmGraphBuilder;
 
 namespace wasm {
 
+const uint32_t kMaxNumWasmLocals = 8000000;
+
 // Helpers for decoding different kinds of operands which follow bytecodes.
 struct LocalIndexOperand {
   uint32_t index;
@@ -183,10 +185,17 @@ struct MemoryAccessOperand {
   uint32_t alignment;
   uint32_t offset;
   unsigned length;
-  inline MemoryAccessOperand(Decoder* decoder, const byte* pc) {
+  inline MemoryAccessOperand(Decoder* decoder, const byte* pc,
+                             uint32_t max_alignment) {
     unsigned alignment_length;
     alignment =
         decoder->checked_read_u32v(pc, 1, &alignment_length, "alignment");
+    if (max_alignment < alignment) {
+      decoder->error(pc, pc + 1,
+                     "invalid alignment; expected maximum alignment is %u, "
+                     "actual alignment is %u",
+                     max_alignment, alignment);
+    }
     unsigned offset_length;
     offset = decoder->checked_read_u32v(pc, 1 + alignment_length,
                                         &offset_length, "offset");
@@ -228,25 +237,24 @@ inline std::ostream& operator<<(std::ostream& os, const DecodeStruct& tree) {
   return os;
 }
 
-DecodeResult VerifyWasmCode(base::AccountingAllocator* allocator,
-                            FunctionBody& body);
-DecodeResult BuildTFGraph(base::AccountingAllocator* allocator,
-                          TFBuilder* builder, FunctionBody& body);
-bool PrintAst(base::AccountingAllocator* allocator, const FunctionBody& body,
+DecodeResult VerifyWasmCode(AccountingAllocator* allocator, FunctionBody& body);
+DecodeResult BuildTFGraph(AccountingAllocator* allocator, TFBuilder* builder,
+                          FunctionBody& body);
+bool PrintAst(AccountingAllocator* allocator, const FunctionBody& body,
               std::ostream& os,
               std::vector<std::tuple<uint32_t, int, int>>* offset_table);
 
 // A simplified form of AST printing, e.g. from a debugger.
 void PrintAstForDebugging(const byte* start, const byte* end);
 
-inline DecodeResult VerifyWasmCode(base::AccountingAllocator* allocator,
+inline DecodeResult VerifyWasmCode(AccountingAllocator* allocator,
                                    ModuleEnv* module, FunctionSig* sig,
                                    const byte* start, const byte* end) {
   FunctionBody body = {module, sig, nullptr, start, end};
   return VerifyWasmCode(allocator, body);
 }
 
-inline DecodeResult BuildTFGraph(base::AccountingAllocator* allocator,
+inline DecodeResult BuildTFGraph(AccountingAllocator* allocator,
                                  TFBuilder* builder, ModuleEnv* module,
                                  FunctionSig* sig, const byte* start,
                                  const byte* end) {

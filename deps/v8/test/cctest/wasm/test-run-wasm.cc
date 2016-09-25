@@ -605,46 +605,6 @@ WASM_EXEC_TEST(Float32Neg) {
   }
 }
 
-WASM_EXEC_TEST(Float32SubMinusZero) {
-  WasmRunner<float> r(execution_mode, MachineType::Float32());
-  BUILD(r, WASM_F32_SUB(WASM_F32(-0.0), WASM_GET_LOCAL(0)));
-
-  uint32_t sNanValue =
-      bit_cast<uint32_t>(std::numeric_limits<float>::signaling_NaN());
-  uint32_t qNanValue =
-      bit_cast<uint32_t>(std::numeric_limits<float>::quiet_NaN());
-  uint32_t payload = 0x00200000;
-
-  uint32_t expected = (qNanValue & 0xffc00000) | payload;
-  uint32_t operand = (sNanValue & 0xffc00000) | payload;
-  CHECK_EQ(expected, bit_cast<uint32_t>(r.Call(bit_cast<float>(operand))));
-
-  // Change the sign of the NaN.
-  expected |= 0x80000000;
-  operand |= 0x80000000;
-  CHECK_EQ(expected, bit_cast<uint32_t>(r.Call(bit_cast<float>(operand))));
-}
-
-WASM_EXEC_TEST(Float64SubMinusZero) {
-  WasmRunner<double> r(execution_mode, MachineType::Float64());
-  BUILD(r, WASM_F64_SUB(WASM_F64(-0.0), WASM_GET_LOCAL(0)));
-
-  uint64_t sNanValue =
-      bit_cast<uint64_t>(std::numeric_limits<double>::signaling_NaN());
-  uint64_t qNanValue =
-      bit_cast<uint64_t>(std::numeric_limits<double>::quiet_NaN());
-  uint64_t payload = 0x0000123456789abc;
-
-  uint64_t expected = (qNanValue & 0xfff8000000000000) | payload;
-  uint64_t operand = (sNanValue & 0xfff8000000000000) | payload;
-  CHECK_EQ(expected, bit_cast<uint64_t>(r.Call(bit_cast<double>(operand))));
-
-  // Change the sign of the NaN.
-  expected |= 0x8000000000000000;
-  operand |= 0x8000000000000000;
-  CHECK_EQ(expected, bit_cast<uint64_t>(r.Call(bit_cast<double>(operand))));
-}
-
 WASM_EXEC_TEST(Float64Neg) {
   WasmRunner<double> r(execution_mode, MachineType::Float64());
   BUILD(r, WASM_F64_NEG(WASM_GET_LOCAL(0)));
@@ -2153,7 +2113,7 @@ static void Run_WasmMixedCall_N(WasmExecutionMode execution_mode, int start) {
 
   int num_params = static_cast<int>(arraysize(mixed)) - start;
   for (int which = 0; which < num_params; ++which) {
-    v8::base::AccountingAllocator allocator;
+    v8::internal::AccountingAllocator allocator;
     Zone zone(&allocator);
     TestingModule module(execution_mode);
     module.AddMemory(1024);
@@ -2681,7 +2641,7 @@ static void CompileCallIndirectMany(LocalType param) {
   // with many many parameters.
   TestSignatures sigs;
   for (byte num_params = 0; num_params < 40; ++num_params) {
-    v8::base::AccountingAllocator allocator;
+    v8::internal::AccountingAllocator allocator;
     Zone zone(&allocator);
     HandleScope scope(CcTest::InitIsolateOnce());
     TestingModule module(kExecuteCompiled);

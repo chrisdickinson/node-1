@@ -12,12 +12,12 @@
 #include "src/allocation.h"
 #include "src/asmjs/asm-types.h"
 #include "src/ast/ast-type-bounds.h"
+#include "src/ast/ast-types.h"
 #include "src/ast/ast.h"
 #include "src/effects.h"
 #include "src/type-info.h"
-#include "src/types.h"
-#include "src/zone-containers.h"
-#include "src/zone.h"
+#include "src/zone/zone-containers.h"
+#include "src/zone/zone.h"
 
 namespace v8 {
 namespace internal {

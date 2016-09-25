@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "src/ast/scopes.h"
 #include "src/compiler/code-generator.h"
+#include "src/compilation-info.h"
 #include "src/compiler/code-generator-impl.h"
 #include "src/compiler/gap-resolver.h"
 #include "src/compiler/node-matchers.h"
@@ -702,9 +702,6 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
     case kArchDebugBreak:
       __ stop("kArchDebugBreak");
       break;
-    case kArchImpossible:
-      __ Abort(kConversionFromImpossibleValue);
-      break;
     case kArchComment: {
       Address comment_string = i.InputExternalReference(0).address();
       __ RecordComment(reinterpret_cast<const char*>(comment_string));
@@ -1317,6 +1314,38 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       __ sub_d(i.OutputDoubleRegister(), i.InputDoubleRegister(0),
                i.InputDoubleRegister(1));
       break;
+    case kMips64MaddS:
+      __ madd_s(i.OutputFloatRegister(), i.InputFloatRegister(0),
+                i.InputFloatRegister(1), i.InputFloatRegister(2));
+      break;
+    case kMips64MaddD:
+      __ madd_d(i.OutputDoubleRegister(), i.InputDoubleRegister(0),
+                i.InputDoubleRegister(1), i.InputDoubleRegister(2));
+      break;
+    case kMips64MaddfS:
+      __ maddf_s(i.OutputFloatRegister(), i.InputFloatRegister(1),
+                 i.InputFloatRegister(2));
+      break;
+    case kMips64MaddfD:
+      __ maddf_d(i.OutputDoubleRegister(), i.InputDoubleRegister(1),
+                 i.InputDoubleRegister(2));
+      break;
+    case kMips64MsubS:
+      __ msub_s(i.OutputFloatRegister(), i.InputFloatRegister(0),
+                i.InputFloatRegister(1), i.InputFloatRegister(2));
+      break;
+    case kMips64MsubD:
+      __ msub_d(i.OutputDoubleRegister(), i.InputDoubleRegister(0),
+                i.InputDoubleRegister(1), i.InputDoubleRegister(2));
+      break;
+    case kMips64MsubfS:
+      __ msubf_s(i.OutputFloatRegister(), i.InputFloatRegister(1),
+                 i.InputFloatRegister(2));
+      break;
+    case kMips64MsubfD:
+      __ msubf_d(i.OutputDoubleRegister(), i.InputDoubleRegister(1),
+                 i.InputDoubleRegister(2));
+      break;
     case kMips64MulD:
       // TODO(plind): add special case: right op is -1.0, see arm port.
       __ mul_d(i.OutputDoubleRegister(), i.InputDoubleRegister(0),
@@ -1644,6 +1673,12 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     // ... more basic instructions ...
 
+    case kMips64Seb:
+      __ seb(i.OutputRegister(), i.InputRegister(0));
+      break;
+    case kMips64Seh:
+      __ seh(i.OutputRegister(), i.InputRegister(0));
+      break;
     case kMips64Lbu:
       __ lbu(i.OutputRegister(), i.MemoryOperand());
       break;
@@ -2335,10 +2370,7 @@ void CodeGenerator::AssembleMove(InstructionOperand* source,
         case Constant::kHeapObject: {
           Handle<HeapObject> src_object = src.ToHeapObject();
           Heap::RootListIndex index;
-          int slot;
-          if (IsMaterializableFromFrame(src_object, &slot)) {
-            __ ld(dst, g.SlotToMemOperand(slot));
-          } else if (IsMaterializableFromRoot(src_object, &index)) {
+          if (IsMaterializableFromRoot(src_object, &index)) {
             __ LoadRoot(dst, index);
           } else {
             __ li(dst, src_object);

@@ -63,6 +63,7 @@ enum ScavengeSpeedMode { kForAllObjects, kForSurvivedObjects };
 #define INCREMENTAL_SCOPES(F)                                      \
   /* MC_INCREMENTAL is the top-level incremental marking scope. */ \
   F(MC_INCREMENTAL)                                                \
+  F(MC_INCREMENTAL_SWEEPING)                                       \
   F(MC_INCREMENTAL_WRAPPER_PROLOGUE)                               \
   F(MC_INCREMENTAL_WRAPPER_TRACING)                                \
   F(MC_INCREMENTAL_FINALIZE)                                       \
@@ -192,7 +193,8 @@ class GCTracer {
       START = 3
     };
 
-    Event(Type type, const char* gc_reason, const char* collector_reason);
+    Event(Type type, GarbageCollectionReason gc_reason,
+          const char* collector_reason);
 
     // Returns a string describing the event type.
     const char* TypeName(bool short_name) const;
@@ -200,7 +202,7 @@ class GCTracer {
     // Type of event
     Type type;
 
-    const char* gc_reason;
+    GarbageCollectionReason gc_reason;
     const char* collector_reason;
 
     // Timestamp set in the constructor.
@@ -270,7 +272,7 @@ class GCTracer {
   explicit GCTracer(Heap* heap);
 
   // Start collecting data.
-  void Start(GarbageCollector collector, const char* gc_reason,
+  void Start(GarbageCollector collector, GarbageCollectionReason gc_reason,
              const char* collector_reason);
 
   // Stop collecting data and print results.
@@ -381,6 +383,8 @@ class GCTracer {
   // Discard all recorded survival events.
   void ResetSurvivalEvents();
 
+  void NotifyIncrementalMarkingStart();
+
   V8_INLINE void AddScopeSample(Scope::ScopeId scope, double duration) {
     DCHECK(scope < Scope::NUMBER_OF_SCOPES);
     if (scope >= Scope::FIRST_INCREMENTAL_SCOPE &&
@@ -475,6 +479,8 @@ class GCTracer {
   // of the initial atomic sweeping pause. Make sure that it accumulates
   // all sweeping operations performed on the main thread.
   double cumulative_sweeping_duration_;
+
+  double incremental_marking_start_time_;
 
   // Timestamp and allocation counter at the last sampled allocation event.
   double allocation_time_ms_;

@@ -90,9 +90,9 @@ class AsmWasmBuilderImpl final : public AstVisitor<AsmWasmBuilderImpl> {
     current_function_builder_ =
         builder_->FunctionAt(foreign_init_function_index_);
     current_function_builder_->SetExported();
-    std::string raw_name = "__foreign_init__";
-    current_function_builder_->SetName(raw_name.data(),
-                                       static_cast<int>(raw_name.size()));
+    current_function_builder_->SetName(
+        AsmWasmBuilder::foreign_init_name,
+        static_cast<int>(strlen(AsmWasmBuilder::foreign_init_name)));
     current_function_builder_->SetSignature(b.Build());
     for (size_t pos = 0; pos < foreign_variables_.size(); ++pos) {
       current_function_builder_->EmitGetLocal(static_cast<uint32_t>(pos));
@@ -551,6 +551,14 @@ class AsmWasmBuilderImpl final : public AstVisitor<AsmWasmBuilderImpl> {
         current_function_builder_->EmitGetLocal(
             LookupOrInsertLocal(var, var_type));
       }
+    } else if (scope_ == kExportScope) {
+      Variable* var = expr->var();
+      DCHECK(var->is_function());
+      uint32_t index = LookupOrInsertFunction(var);
+      builder_->FunctionAt(index)->SetExported();
+      builder_->FunctionAt(index)->SetName(
+          AsmWasmBuilder::single_function_name,
+          static_cast<int>(strlen(AsmWasmBuilder::single_function_name)));
     }
   }
 
@@ -833,7 +841,7 @@ class AsmWasmBuilderImpl final : public AstVisitor<AsmWasmBuilderImpl> {
       // Skip extra assignment inserted by the parser when in this form:
       // (function Module(a, b, c) {... })
       if (expr->target()->IsVariableProxy() &&
-          expr->target()->AsVariableProxy()->var()->mode() == CONST_LEGACY) {
+          expr->target()->AsVariableProxy()->var()->is_sloppy_function_name()) {
         return;
       }
       Property* prop = expr->value()->AsProperty();
@@ -1099,11 +1107,11 @@ class AsmWasmBuilderImpl final : public AstVisitor<AsmWasmBuilderImpl> {
       }
       case AsmTyper::kMathAbs: {
         if (call_type == kAstI32) {
-          uint32_t tmp = current_function_builder_->AddLocal(kAstI32);
+          WasmTemporary tmp(current_function_builder_, kAstI32);
 
           // if set_local(tmp, x) < 0
           Visit(call->arguments()->at(0));
-          current_function_builder_->EmitSetLocal(tmp);
+          current_function_builder_->EmitSetLocal(tmp.index());
           byte code[] = {WASM_I8(0)};
           current_function_builder_->EmitCode(code, sizeof(code));
           current_function_builder_->Emit(kExprI32LtS);
@@ -1111,12 +1119,12 @@ class AsmWasmBuilderImpl final : public AstVisitor<AsmWasmBuilderImpl> {
 
           // then (0 - tmp)
           current_function_builder_->EmitCode(code, sizeof(code));
-          current_function_builder_->EmitGetLocal(tmp);
+          current_function_builder_->EmitGetLocal(tmp.index());
           current_function_builder_->Emit(kExprI32Sub);
 
           // else tmp
           current_function_builder_->Emit(kExprElse);
-          current_function_builder_->EmitGetLocal(tmp);
+          current_function_builder_->EmitGetLocal(tmp.index());
           // end
           current_function_builder_->Emit(kExprEnd);
 
@@ -1134,25 +1142,25 @@ class AsmWasmBuilderImpl final : public AstVisitor<AsmWasmBuilderImpl> {
       case AsmTyper::kMathMin: {
         // TODO(bradnelson): Change wasm to match Math.min in asm.js mode.
         if (call_type == kAstI32) {
-          uint32_t tmp_x = current_function_builder_->AddLocal(kAstI32);
-          uint32_t tmp_y = current_function_builder_->AddLocal(kAstI32);
+          WasmTemporary tmp_x(current_function_builder_, kAstI32);
+          WasmTemporary tmp_y(current_function_builder_, kAstI32);
 
           // if set_local(tmp_x, x) < set_local(tmp_y, y)
           Visit(call->arguments()->at(0));
-          current_function_builder_->EmitSetLocal(tmp_x);
+          current_function_builder_->EmitSetLocal(tmp_x.index());
 
           Visit(call->arguments()->at(1));
-          current_function_builder_->EmitSetLocal(tmp_y);
+          current_function_builder_->EmitSetLocal(tmp_y.index());
 
           current_function_builder_->Emit(kExprI32LeS);
           current_function_builder_->Emit(kExprIf);
 
           // then tmp_x
-          current_function_builder_->EmitGetLocal(tmp_x);
+          current_function_builder_->EmitGetLocal(tmp_x.index());
 
           // else tmp_y
           current_function_builder_->Emit(kExprElse);
-          current_function_builder_->EmitGetLocal(tmp_y);
+          current_function_builder_->EmitGetLocal(tmp_y.index());
           current_function_builder_->Emit(kExprEnd);
 
         } else if (call_type == kAstF32) {
@@ -1169,26 +1177,26 @@ class AsmWasmBuilderImpl final : public AstVisitor<AsmWasmBuilderImpl> {
       case AsmTyper::kMathMax: {
         // TODO(bradnelson): Change wasm to match Math.max in asm.js mode.
         if (call_type == kAstI32) {
-          uint32_t tmp_x = current_function_builder_->AddLocal(kAstI32);
-          uint32_t tmp_y = current_function_builder_->AddLocal(kAstI32);
+          WasmTemporary tmp_x(current_function_builder_, kAstI32);
+          WasmTemporary tmp_y(current_function_builder_, kAstI32);
 
           // if set_local(tmp_x, x) < set_local(tmp_y, y)
           Visit(call->arguments()->at(0));
 
-          current_function_builder_->EmitSetLocal(tmp_x);
+          current_function_builder_->EmitSetLocal(tmp_x.index());
 
           Visit(call->arguments()->at(1));
-          current_function_builder_->EmitSetLocal(tmp_y);
+          current_function_builder_->EmitSetLocal(tmp_y.index());
 
           current_function_builder_->Emit(kExprI32LeS);
           current_function_builder_->Emit(kExprIf);
 
           // then tmp_y
-          current_function_builder_->EmitGetLocal(tmp_y);
+          current_function_builder_->EmitGetLocal(tmp_y.index());
 
           // else tmp_x
           current_function_builder_->Emit(kExprElse);
-          current_function_builder_->EmitGetLocal(tmp_x);
+          current_function_builder_->EmitGetLocal(tmp_x.index());
           current_function_builder_->Emit(kExprEnd);
 
         } else if (call_type == kAstF32) {
@@ -1792,6 +1800,10 @@ ZoneBuffer* AsmWasmBuilder::Run(i::Handle<i::FixedArray>* foreign_args) {
   impl.builder_->WriteTo(*buffer);
   return buffer;
 }
+
+const char* AsmWasmBuilder::foreign_init_name = "__foreign_init__";
+const char* AsmWasmBuilder::single_function_name = "__single_function__";
+
 }  // namespace wasm
 }  // namespace internal
 }  // namespace v8

@@ -17,7 +17,7 @@
 #include "src/compiler/source-position.h"
 #include "src/macro-assembler.h"
 #include "src/register-configuration.h"
-#include "src/zone-allocator.h"
+#include "src/zone/zone-allocator.h"
 
 namespace v8 {
 namespace internal {
@@ -105,6 +105,7 @@ class InstructionOperand {
 
   bool InterferesWith(const InstructionOperand& that) const;
 
+  // APIs to aid debugging. For general-stream APIs, use operator<<
   void Print(const RegisterConfiguration* config) const;
   void Print() const;
 
@@ -672,6 +673,7 @@ class MoveOperands final : public ZoneObject {
     return source_.IsInvalid();
   }
 
+  // APIs to aid debugging. For general-stream APIs, use operator<<
   void Print(const RegisterConfiguration* config) const;
   void Print() const;
 
@@ -856,10 +858,7 @@ class Instruction final {
     reference_map_ = nullptr;
   }
 
-  bool IsNop() const {
-    return arch_opcode() == kArchNop && InputCount() == 0 &&
-           OutputCount() == 0 && TempCount() == 0;
-  }
+  bool IsNop() const { return arch_opcode() == kArchNop; }
 
   bool IsDeoptimizeCall() const {
     return arch_opcode() == ArchOpcode::kArchDeoptimize ||
@@ -915,6 +914,7 @@ class Instruction final {
     block_ = block;
   }
 
+  // APIs to aid debugging. For general-stream APIs, use operator<<
   void Print(const RegisterConfiguration* config) const;
   void Print() const;
 
@@ -1184,6 +1184,7 @@ class PhiInstruction final : public ZoneObject {
   PhiInstruction(Zone* zone, int virtual_register, size_t input_count);
 
   void SetInput(size_t offset, int virtual_register);
+  void RenameInput(size_t offset, int virtual_register);
 
   int virtual_register() const { return virtual_register_; }
   const IntVector& operands() const { return operands_; }
@@ -1251,6 +1252,7 @@ class InstructionBlock final : public ZoneObject {
 
   typedef ZoneVector<PhiInstruction*> PhiInstructions;
   const PhiInstructions& phis() const { return phis_; }
+  PhiInstruction* PhiAt(size_t i) const { return phis_[i]; }
   void AddPhi(PhiInstruction* phi) { phis_.push_back(phi); }
 
   void set_ao_number(RpoNumber ao_number) { ao_number_ = ao_number; }
@@ -1284,6 +1286,17 @@ class InstructionBlock final : public ZoneObject {
   bool must_deconstruct_frame_;
   RpoNumber last_deferred_;
 };
+
+class InstructionSequence;
+
+struct PrintableInstructionBlock {
+  const RegisterConfiguration* register_configuration_;
+  const InstructionBlock* block_;
+  const InstructionSequence* code_;
+};
+
+std::ostream& operator<<(std::ostream& os,
+                         const PrintableInstructionBlock& printable_block);
 
 typedef ZoneDeque<Constant> ConstantDeque;
 typedef std::map<int, Constant, std::less<int>,
@@ -1343,8 +1356,7 @@ class InstructionSequence final : public ZoneObject {
   void MarkAsRepresentation(MachineRepresentation rep, int virtual_register);
 
   bool IsReference(int virtual_register) const {
-    return GetRepresentation(virtual_register) ==
-           MachineRepresentation::kTagged;
+    return CanBeTaggedPointer(GetRepresentation(virtual_register));
   }
   bool IsFP(int virtual_register) const {
     return IsFloatingPoint(GetRepresentation(virtual_register));
@@ -1445,6 +1457,8 @@ class InstructionSequence final : public ZoneObject {
     }
     return false;
   }
+
+  // APIs to aid debugging. For general-stream APIs, use operator<<
   void Print(const RegisterConfiguration* config) const;
   void Print() const;
 
