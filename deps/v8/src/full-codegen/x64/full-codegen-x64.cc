@@ -777,7 +777,7 @@ void FullCodeGenerator::VisitVariableDeclaration(
     }
 
     case VariableLocation::MODULE:
-      UNREACHABLE();
+      break;
   }
 }
 
@@ -834,8 +834,12 @@ void FullCodeGenerator::VisitFunctionDeclaration(
       break;
     }
 
-    case VariableLocation::MODULE:
-      UNREACHABLE();
+    case VariableLocation::MODULE: {
+      Comment cmnt(masm_, "[ FunctionDeclaration");
+      VisitForAccumulatorValue(declaration->fun());
+      __ movp(StackOperand(variable), result_register());
+      break;
+    }
   }
 }
 
@@ -1278,7 +1282,8 @@ void FullCodeGenerator::EmitVariableLoad(VariableProxy* proxy,
     }
 
     case VariableLocation::MODULE:
-      UNREACHABLE();
+      context()->Plug(var);
+      break;
   }
 }
 
