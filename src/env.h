@@ -181,6 +181,7 @@ namespace node {
   V(regexp_string, "regexp")                                                  \
   V(rename_string, "rename")                                                  \
   V(replacement_string, "replacement")                                        \
+  V(requests_string, "requests")                                              \
   V(retry_string, "retry")                                                    \
   V(rss_string, "rss")                                                        \
   V(serial_string, "serial")                                                  \

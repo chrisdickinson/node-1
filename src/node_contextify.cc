@@ -935,14 +935,6 @@ class ContextifyModule : public BaseObject {
     Local<FunctionTemplate> module_tmpl = env->NewFunctionTemplate(New);
     module_tmpl->InstanceTemplate()->SetInternalFieldCount(1);
     module_tmpl->SetClassName(class_name);
-    /*
-      mod = new Module(`
-        
-      `, (referringModule, specifier) => {
-        
-      })
-      mod.evaluate(context) -> result
-    */
     env->SetProtoMethod(module_tmpl, "evaluate", Evaluate);
     env->SetProtoMethod(module_tmpl, "instantiate", Instantiate);
 
@@ -990,6 +982,19 @@ class ContextifyModule : public BaseObject {
     Local<Module> unwrapped_module = v8_module.ToLocalChecked();
 
     unwrapped_module->SetEmbedderData(args.This());
+
+    int len = unwrapped_module->GetModuleRequestsLength();
+    len = len < 0 ? 0 : len;
+
+    Local<Array> requests = Array::New(env->isolate(),
+                                       len);
+
+    for (int i = 0; i < len; ++i) {
+      requests->Set(i, unwrapped_module->GetModuleRequest(i));
+    }
+
+    args.This()->Set(env->requests_string(), requests);
+
     contextify_module->module_.Reset(env->isolate(),
                                      unwrapped_module);
   }
