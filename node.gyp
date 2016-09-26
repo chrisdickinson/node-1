@@ -45,6 +45,7 @@
       'lib/_http_server.js',
       'lib/https.js',
       'lib/_linklist.js',
+      'lib/loader.js',
       'lib/module.js',
       'lib/net.js',
       'lib/os.js',
