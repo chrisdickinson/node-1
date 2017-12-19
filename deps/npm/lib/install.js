@@ -91,23 +91,26 @@ install.completion = function (opts, cb) {
   cb()
 }
 
+// bluebird first for promisification
+var Bluebird = require('bluebird')
+
 // system packages
 var fs = require('fs')
 var path = require('path')
+var readdir = Bluebird.promisify(fs.readdir)
 
 // dependencies
 var log = require('npmlog')
-var readPackageTree = require('read-package-tree')
-var readPackageJson = require('read-package-json')
+var readPackageTree = Bluebird.promisify(require('read-package-tree'))
+var readPackageJson = Bluebird.promisify(require('read-package-json'))
 var chain = require('slide').chain
 var asyncMap = require('slide').asyncMap
 var archy = require('archy')
-var mkdirp = require('mkdirp')
+var mkdirp = Bluebird.promisify(require('mkdirp'))
 var rimraf = require('rimraf')
 var iferr = require('iferr')
 var validate = require('aproba')
 var uniq = require('lodash.uniq')
-var Bluebird = require('bluebird')
 
 // npm internal utils
 var npm = require('./npm.js')
@@ -120,11 +123,13 @@ var saveMetrics = require('./utils/metrics.js').save
 
 // install specific libraries
 var copyTree = require('./install/copy-tree.js')
-var readShrinkwrap = require('./install/read-shrinkwrap.js')
+var readShrinkwrap = Bluebird.promisify(require('./install/read-shrinkwrap.js'))
+var readShrinkwrapAndInflate = require('./install/read-shrinkwrap.js').andInflate
 var computeMetadata = require('./install/deps.js').computeMetadata
 var prefetchDeps = require('./install/deps.js').prefetchDeps
 var loadDeps = require('./install/deps.js').loadDeps
 var loadDevDeps = require('./install/deps.js').loadDevDeps
+var loadAssetDeps = require('./install/deps.js').loadAssetDeps
 var getAllMetadata = require('./install/deps.js').getAllMetadata
 var loadRequestedDeps = require('./install/deps.js').loadRequestedDeps
 var loadExtraneous = require('./install/deps.js').loadExtraneous
@@ -224,9 +229,17 @@ function Installer (where, dryrun, args, opts) {
   const only = npm.config.get('only')
   const onlyProd = /^prod(uction)?$/.test(only)
   const onlyDev = /^dev(elopment)?$/.test(only)
+  const onlyAssets = /^assets$/.test(only)
+  const assets = npm.config.get('assets')
   const prod = npm.config.get('production')
-  this.dev = opts.dev != null ? opts.dev : dev || (!onlyProd && !prod) || onlyDev
-  this.prod = opts.prod != null ? opts.prod : !onlyDev
+  this.saveAssets = npm.config.get('save-assets')
+  this.saveDev = npm.config.get('save-dev')
+  this.saveOptional = npm.config.get('save-optional')
+  this.saveProd = npm.config.get('save-prod')
+  this.saveBundle = npm.config.get('save-bundle')
+  this.dev = opts.dev != null ? opts.dev : dev || (!onlyAssets && !onlyProd && !prod) || onlyDev
+  this.prod = opts.prod != null ? opts.prod : !onlyDev && !onlyAssets
+  this.assets = opts.assets != null ? opts.assets : assets && ((!onlyDev && !onlyProd) || onlyAssets)
 
   this.packageLockOnly = opts.packageLockOnly != null
     ? opts.packageLockOnly : npm.config.get('package-lock-only')
@@ -427,7 +440,7 @@ Installer.prototype.loadIdealTree = function (cb) {
     [this, this.loadAllDepsIntoIdealTree],
     [this, this.finishTracker, 'loadIdealTree:loadAllDepsIntoIdealTree'],
     [this, function (next) { computeMetadata(this.idealTree); next() }],
-    [this, this.pruneIdealTree]
+    [this, this.pruneIdealTree],
   ], cb)
 }
 
@@ -436,10 +449,9 @@ Installer.prototype.pruneIdealTree = function (cb) {
   // if our lock file didn't have the requires field and there
   // are any fake children then forgo pruning until we have more info.
   if (!this.idealTree.hasRequiresFromLock && this.idealTree.children.some((n) => n.fakeChild)) return cb()
-  var toPrune = this.idealTree.children
+  var toPrunePackages = this.idealTree.children
     .filter(isExtraneous)
-    .map((n) => ({name: moduleName(n)}))
-  return removeExtraneous(toPrune, this.idealTree, cb)
+  return removeExtraneous(toPrunePackages, this.idealTree, cb)
 }
 
 Installer.prototype.loadAllDepsIntoIdealTree = function (cb) {
@@ -457,7 +469,8 @@ Installer.prototype.loadAllDepsIntoIdealTree = function (cb) {
   } else {
     const depsToPreload = Object.assign({},
       this.dev ? this.idealTree.package.devDependencies : {},
-      this.prod ? this.idealTree.package.dependencies : {}
+      this.prod ? this.idealTree.package.dependencies : {},
+      this.assets ? this.idealTree.package.assetDependencies : {}
     )
     if (this.prod || this.dev) {
       steps.push(
@@ -470,6 +483,10 @@ Installer.prototype.loadAllDepsIntoIdealTree = function (cb) {
     if (this.dev) {
       steps.push(
         [loadDevDeps, this.idealTree, cg.newGroup('loadDevDeps')])
+    }
+    if (this.assets) {
+      steps.push(
+        [loadAssetDeps, this.idealTree, cg.newGroup('loadAssetDeps')])
     }
   }
   steps.push(
@@ -549,9 +566,12 @@ Installer.prototype.executeActions = function (cb) {
     [doParallelActions, 'extract', staging, todo, cg.newGroup('extract', 100)],
     [doReverseSerialActions, 'unbuild', staging, todo, cg.newGroup('unbuild')],
     [doSerialActions, 'remove', staging, todo, cg.newGroup('remove')],
+    [doParallelActions, 'remove-asset-index', staging, todo, cg.newGroup('remove-asset-index')],
     [doSerialActions, 'move', staging, todo, cg.newGroup('move')],
     [doSerialActions, 'finalize', staging, todo, cg.newGroup('finalize')],
     [doParallelActions, 'refresh-package-json', staging, todo, cg.newGroup('refresh-package-json')],
+    [doParallelActions, 'write-asset-index', staging, todo, cg.newGroup('write-asset-index')],
+    [doParallelActions, 'rewrite-asset-js', staging, todo, cg.newGroup('rewrite-asset-js')],
     [doParallelActions, 'preinstall', staging, todo, trackLifecycle.newGroup('preinstall')],
     [doSerialActions, 'build', staging, todo, trackLifecycle.newGroup('build')],
     [doSerialActions, 'global-link', staging, todo, trackLifecycle.newGroup('global-link')],
@@ -600,7 +620,7 @@ Installer.prototype.runPreinstallTopLevelLifecycles = function (cb) {
   if (!this.topLevelLifecycles) return cb()
   log.silly('install', 'runPreinstallTopLevelLifecycles')
 
-  readPackageJson(path.join(this.where, 'package.json'), log, false, (err, data) => {
+  return readPackageJson(path.join(this.where, 'package.json'), log, false).then((err, data) => {
     if (err) return cb()
     this.currentTree = createNode({
       isTop: true,
@@ -644,49 +664,64 @@ Installer.prototype.saveToDependencies = function (cb) {
 Installer.prototype.readGlobalPackageData = function (cb) {
   validate('F', arguments)
   log.silly('install', 'readGlobalPackageData')
-  var self = this
-  this.loadArgMetadata(iferr(cb, function () {
-    mkdirp(self.where, iferr(cb, function () {
+  this.loadArgMetadata(iferr(cb, () => {
+    return mkdirp(this.where).then(() => {
       var pkgs = {}
-      self.args.forEach(function (pkg) {
+      this.args.forEach(function (pkg) {
         pkgs[pkg.name] = true
       })
-      readPackageTree(self.where, function (ctx, kid) { return ctx.parent || pkgs[kid] }, iferr(cb, function (currentTree) {
-        self.currentTree = currentTree
-        return cb()
-      }))
-    }))
+      const filter = (ctx, kid) => ctx.parent || pkgs[kid]
+      return readPackageTree(this.where, filter)
+    }).then((currentTree) => {
+      this.currentTree = currentTree
+    }).asCallback(cb)
   }))
 }
 
 Installer.prototype.readLocalPackageData = function (cb) {
   validate('F', arguments)
   log.silly('install', 'readLocalPackageData')
-  var self = this
-  mkdirp(this.where, iferr(cb, function () {
-    readPackageTree(self.where, iferr(cb, function (currentTree) {
-      self.currentTree = currentTree
-      self.currentTree.warnings = []
-      if (currentTree.error && currentTree.error.code === 'EJSONPARSE') {
-        return cb(currentTree.error)
-      }
-      if (!self.noPackageJsonOk && !currentTree.package) {
-        log.error('install', "Couldn't read dependencies")
-        var er = new Error("ENOENT, open '" + path.join(self.where, 'package.json') + "'")
-        er.code = 'ENOPACKAGEJSON'
-        er.errno = 34
-        return cb(er)
-      }
-      if (!currentTree.package) currentTree.package = {}
-      readShrinkwrap(currentTree, function (err) {
-        if (err) {
-          cb(err)
-        } else {
-          self.loadArgMetadata(cb)
+  return mkdirp(this.where).then(() => {
+    return readPackageTree(this.where)
+  }).then((currentTree) => {
+    this.currentTree = currentTree
+    this.currentTree.warnings = []
+    if (currentTree.error && currentTree.error.code === 'EJSONPARSE') {
+      throw currentTree.error
+    }
+    if (!this.noPackageJsonOk && !currentTree.package) {
+      log.error('install', "Couldn't read dependencies")
+      var er = new Error("ENOENT, open '" + path.join(this.where, 'package.json') + "'")
+      er.code = 'ENOPACKAGEJSON'
+      er.errno = 34
+      throw er
+    }
+    if (!currentTree.package) currentTree.package = {}
+    return readAssetList(path.join(this.where, 'assets'), log)
+  }).then((assets) => {
+    assets.forEach((asset) => { asset.parent = this.currentTree })
+    this.currentTree.children = this.currentTree.children.concat(assets)
+    return readShrinkwrap(this.currentTree)
+  }).then(() => {
+    this.loadArgMetadata(cb)
+  }).catch(cb)
+}
+
+function readAssetList (assetsdir, log) {
+  return readdir(assetsdir).then((files) => {
+    return Bluebird.map(files, (file) => {
+      const filepath = path.join(assetsdir, file)
+      return readPackageJson(path.join(filepath, 'package.json'), log, false).then((pkg) => {
+        return {
+          path: filepath,
+          realpath: filepath,
+          isLink: false,
+          isAsset: true,
+          package: pkg
         }
-      })
-    }))
-  }))
+      }).catch((err) => null)
+    }).filter((asset) => asset != null)
+  }).catch(() => [])
 }
 
 Installer.prototype.cloneCurrentTreeToIdealTree = function (cb) {
@@ -695,7 +730,7 @@ Installer.prototype.cloneCurrentTreeToIdealTree = function (cb) {
   this.idealTree = copyTree(this.currentTree, (child) => {
     // Filter out any children we didn't install ourselves. They need to be
     // reinstalled in order for things to be correct.
-    return child.isTop || isLink(child) || (
+    return child.isAsset || child.isTop || isLink(child) || (
       child.package &&
       child.package._resolved &&
       (child.package._integrity || child.package._shasum)
@@ -712,7 +747,7 @@ function isLink (child) {
 Installer.prototype.loadShrinkwrap = function (cb) {
   validate('F', arguments)
   log.silly('install', 'loadShrinkwrap')
-  readShrinkwrap.andInflate(this.idealTree, cb)
+  readShrinkwrapAndInflate(this.idealTree, cb)
 }
 
 Installer.prototype.getInstalledModules = function () {
@@ -769,36 +804,45 @@ Installer.prototype.printInstalled = function (cb) {
   }
 }
 
+Installer.prototype.reportArgsInstalled = function () {
+  if (!this.args.length) return ''
+  const prefix = this.saveAssets ? 'asset:' : ''
+  return this.args.map((p) => {
+    return `+ ${prefix+p.name}@${p.version}`
+  }).join('\n') + '\n'
+}
+
 Installer.prototype.printInstalledForHuman = function (diffs, cb) {
-  var removed = 0
-  var added = 0
-  var updated = 0
-  var moved = 0
+  const sb = {
+    remove: 0,
+    removeAsset: 0,
+    add: 0,
+    addAsset: 0,
+    update: 0,
+    updateAsset: 0,
+    move: 0,
+    moveAsset: 0
+  }
   diffs.forEach(function (action) {
-    var mutation = action[0]
-    var pkg = action[1]
+    const mutation = action[0]
+    const pkg = action[1]
     if (pkg.failed) return
-    if (mutation === 'remove') {
-      ++removed
-    } else if (mutation === 'move') {
-      ++moved
-    } else if (mutation === 'add') {
-      ++added
-    } else if (mutation === 'update' || mutation === 'update-linked') {
-      ++updated
+    if (pkg.isAsset) {
+      ++sb[mutation + 'Asset']
+    } else {
+      ++sb[mutation]
     }
   })
   var report = ''
-  if (this.args.length && (added || updated)) {
-    report += this.args.map((p) => {
-      return `+ ${p.name}@${p.version}`
-    }).join('\n') + '\n'
-  }
+  report += this.reportArgsInstalled()
   var actions = []
-  if (added) actions.push('added ' + packages(added))
-  if (removed) actions.push('removed ' + packages(removed))
-  if (updated) actions.push('updated ' + packages(updated))
-  if (moved) actions.push('moved ' + packages(moved))
+  if (sb.add) actions.push('added ' + packages(sb.add))
+  if (sb.remove) actions.push('removed ' + packages(sb.remove))
+  if (sb.update) actions.push('updated ' + packages(sb.update))
+  if (sb.moved) actions.push('moved ' + packages(sb.moved))
+  if (sb.addAsset || sb.moveAsset) actions.push('added ' + assets(sb.addAsset))
+  if (sb.removeAsset || sb.moveAsset) actions.push('removed ' + assets(sb.removeAsset + sb.moveAsset))
+  if (sb.updateAsset) actions.push('updated ' + assets(sb.updateAsset))
   if (actions.length === 0) {
     report += 'up to date'
   } else if (actions.length === 1) {
@@ -814,6 +858,9 @@ Installer.prototype.printInstalledForHuman = function (diffs, cb) {
 
   function packages (num) {
     return num + ' package' + (num > 1 ? 's' : '')
+  }
+  function assets (num) {
+    return num + ' asset' + (num > 1 ? 's' : '')
   }
 }
 
@@ -929,7 +976,7 @@ Installer.prototype.archyDebugTree = function (tree) {
   function expandTree (tree) {
     seen.add(tree)
     return {
-      label: packageId(tree),
+      label: (tree.isAsset ? 'asset: ' : '') +packageId(tree),
       nodes: tree.children.filter((tree) => { return !seen.has(tree) && !tree.removed }).sort(byName).map(expandTree)
     }
   }

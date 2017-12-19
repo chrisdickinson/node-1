@@ -138,10 +138,14 @@ exports.getSaveType = function (tree, arg) {
   var noSaveFlags = !npm.config.get('save') &&
                     !npm.config.get('save-dev') &&
                     !npm.config.get('save-prod') &&
-                    !npm.config.get('save-optional')
+                    !npm.config.get('save-optional') &&
+                    !npm.config.get('save-bundle') &&
+                    !npm.config.get('save-assets')
   if (globalInstall || noSaveFlags) return null
 
-  if (npm.config.get('save-optional')) {
+  if (npm.config.get('save-assets')) {
+    return 'assetDependencies'
+  } else if (npm.config.get('save-optional')) {
     return 'optionalDependencies'
   } else if (npm.config.get('save-dev')) {
     return 'devDependencies'

@@ -70,6 +70,13 @@ class Uninstaller extends Installer {
       removeDeps(this.remove, this.idealTree, saveDeps, cb)
     }))
   }
+  reportArgsInstalled () {
+    if (!this.remove.length) return ''
+    const prefix = this.saveAssets ? 'asset:' : ''
+    return this.remove.map((p) => {
+      return `- ${prefix + p.name}`
+    }).join('\n') + '\n'
+  }
 
   // no top level lifecycles on rm
   runPreinstallTopLevelLifecycles (cb) { cb() }

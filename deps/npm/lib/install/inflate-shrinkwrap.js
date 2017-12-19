@@ -25,35 +25,59 @@ module.exports = function (tree, sw, opts, finishInflating) {
     opts = {}
   }
   if (!npm.config.get('shrinkwrap') || !npm.config.get('package-lock')) {
-    return finishInflating()
+    return Bluebird.resolve().asCallback(finishInflating)
   }
   tree.loaded = false
   tree.hasRequiresFromLock = sw.requires
-  return inflateShrinkwrap(tree.path, tree, sw.dependencies, opts).then(
-    () => finishInflating(),
-    finishInflating
-  )
+  return inflateShrinkwrap(tree.path, tree, sw, opts).asCallback(finishInflating)
 }
 
-function inflateShrinkwrap (topPath, tree, swdeps, opts) {
-  if (!swdeps) return Promise.resolve()
+function inflateShrinkwrap (topPath, tree, sw, opts) {
+  return inflateAssets(topPath, tree, sw.assets, opts).then(() => {
+    return inflateDependencies(topPath, tree, sw.dependencies, opts)
+  })
+}
+
+function inflateAssets (topPath, tree, swassets, opts) {
+  if (!swassets) return BB.resolve()
   if (!opts) opts = {}
   const onDisk = {}
-  tree.children.forEach((child) => {
+  tree.children.filter(child => child.isAsset).forEach((child) => {
     onDisk[moduleName(child)] = child
   })
-
-  tree.children = []
-
-  return BB.each(Object.keys(swdeps), (name) => {
-    const sw = swdeps[name]
+  tree.children = tree.children.filter(child => !child.isAsset)
+  return BB.each(Object.keys(swassets), (name) => {
+    const sw = swassets[name]
     const dependencies = sw.dependencies || {}
     const requested = realizeShrinkwrapSpecifier(name, sw, topPath)
     return inflatableChild(
       onDisk[name], name, topPath, tree, sw, requested, opts
     ).then((child) => {
       child.hasRequiresFromLock = tree.hasRequiresFromLock
-      return inflateShrinkwrap(topPath, child, dependencies)
+    })
+  })
+}
+
+function inflateDependencies (topPath, tree, swdeps, opts) {
+  if (!swdeps) return BB.resolve()
+  if (!opts) opts = {}
+  const onDisk = {}
+  tree.children.filter(child => !child.isAsset).forEach((child) => {
+    onDisk[moduleName(child)] = child
+  })
+
+  tree.children = tree.children.filter(child => child.isAsset)
+
+  return BB.each(Object.keys(swdeps), (name) => {
+    const sw = swdeps[name]
+    sw.isAsset = true
+    const dependencies = sw.dependencies || {}
+    const requested = realizeShrinkwrapSpecifier(name, sw, topPath)
+    return inflatableChild(
+      onDisk[name], name, topPath, tree, sw, requested, opts
+    ).then((child) => {
+      child.hasRequiresFromLock = tree.hasRequiresFromLock
+      return inflateDependencies(topPath, child, dependencies)
     })
   })
 }
@@ -138,7 +162,8 @@ function makeFakeChild (name, topPath, tree, sw, requested) {
     location: tree.location + '/' + pkg.name,
     isLink: requested.type === 'directory',
     isInLink: tree.isLink,
-    swRequires: sw.requires
+    swRequires: sw.requires,
+    isAsset: Boolean(sw.isAsset)
   })
   tree.children.push(child)
   return child
@@ -182,6 +207,7 @@ function fetchChild (topPath, tree, sw, requested) {
       fromBundle: null,
       isLink: isLink,
       isInLink: tree.isLink,
+      isAsset: Boolean(sw.isAsset),
       swRequires: sw.requires
     })
     tree.children.push(child)

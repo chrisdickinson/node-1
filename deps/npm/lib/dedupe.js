@@ -49,6 +49,10 @@ function Deduper (where, dryrun) {
 }
 util.inherits(Deduper, Installer)
 
+Deduper.prototype.reportArgsInstalled = function () {
+  return ''
+}
+
 Deduper.prototype.loadIdealTree = function (cb) {
   validate('F', arguments)
   log.silly('install', 'loadIdealTree')

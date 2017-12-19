@@ -119,7 +119,7 @@ var sortActions = module.exports.sortActions = function (differences) {
   var actions = {}
   differences.forEach(function (action) {
     var child = action[1]
-    actions[child.location] = action
+    actions[child.location || child.path] = action
   })
 
   var sorted = []
@@ -153,8 +153,8 @@ var sortActions = module.exports.sortActions = function (differences) {
   }
   function sortByDeps (action) {
     var mod = action[1]
-    if (added[mod.location]) return
-    added[mod.location] = action
+    if (added[mod.location || mod.path]) return
+    added[mod.location || mod.path] = action
     if (!mod.requiredBy) mod.requiredBy = []
     mod.requiredBy.sort(sortModuleByLocation).forEach(function (mod) {
       if (actions[mod.location]) sortByDeps(actions[mod.location])
@@ -227,17 +227,23 @@ var diffTrees = module.exports._diffTrees = function (oldTree, newTree) {
     .map((flatname) => toRemove[flatname])
     .forEach((pkg) => setAction(differences, 'remove', pkg))
 
+  const only = npm.config.get('only')
+  const onlyProd = /^prod(uction)?$/.test(only)
+  const onlyDev = /^dev(elopment)?$/.test(only)
+  const alsoDev = /^dev(elopment)?$/.test(npm.config.get('also'))
+  const onlyAssets = /^assets$/.test(only)
+
   const includeDev = npm.config.get('dev') ||
-    (!/^prod(uction)?$/.test(npm.config.get('only')) && !npm.config.get('production')) ||
-    /^dev(elopment)?$/.test(npm.config.get('only')) ||
-    /^dev(elopment)?$/.test(npm.config.get('also'))
-  const includeProd = !/^dev(elopment)?$/.test(npm.config.get('only'))
-  if (!includeProd || !includeDev) {
+    (!onlyProd && !npm.config.get('production')) ||
+    onlyDev || alsoDev
+  const includeProd = !onlyDev && !onlyAssets
+  const includeAsset = npm.config.get('assets') && !onlyProd && !onlyDev
+  if (!includeProd || !includeDev | !includeAsset) {
     log.silly('diff-trees', 'filtering actions:', 'includeDev', includeDev, 'includeProd', includeProd)
     differences = differences.filter((diff) => {
       const pkg = diff[1]
       const pkgIsOnlyDev = isOnlyDev(pkg)
-      return (!includeProd && pkgIsOnlyDev) || (includeDev && pkgIsOnlyDev) || (includeProd && !pkgIsOnlyDev)
+      return (!includeProd && pkgIsOnlyDev) || (includeDev && pkgIsOnlyDev) || (includeProd && !pkgIsOnlyDev) || (includeAsset && pkg.isAsset)
     })
   }
   return differences

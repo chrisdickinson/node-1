@@ -94,7 +94,44 @@ function treeToShrinkwrap (tree) {
     pkginfo.requires = true
     shrinkwrapDeps(pkginfo.dependencies = {}, tree, tree)
   }
+  if (tree.children.some(child => child.isAsset)) {
+    pkginfo.requires = true
+    shrinkwrapAssets(pkginfo.assets = {}, tree)
+  }
   return pkginfo
+}
+
+function shrinkwrapAssets (assets, tree) {
+  validate('OO', arguments)
+  sortModules(tree.children.filter(child => child.isAsset)).forEach(function (asset) {
+    if (asset.fakeChild) {
+      assets[moduleName(asset)] = asset.fakeChild
+      return
+    }
+    var pkginfo = assets[moduleName(asset)] = {}
+    var requested = asset.package._requested || getRequested(asset) || {}
+    pkginfo.version = childVersion(tree, asset, requested)
+    if (isRegistry(requested)) {
+      pkginfo.resolved = asset.package._resolved
+    }
+    // no integrity for git assets as integirty hashes are based on the
+    // tarball and we can't (yet) create consistent tarballs from a stable
+    // source.
+    if (requested.type !== 'git') {
+      if (asset.package._integrity) {
+        pkginfo.integrity = asset.package._integrity
+      } else if (asset.package._shasum) {
+        pkginfo.integrity = ssri.fromHex(asset.package._shasum, 'sha1')
+      }
+    }
+    if (asset.requires.length) {
+      pkginfo.requires = {}
+      sortModules(asset.requires).forEach((required) => {
+        var requested = required.package._requested || getRequested(required) || {}
+        pkginfo.requires[moduleName(required)] = childVersion(tree, required, requested)
+      })
+    }
+  })
 }
 
 function shrinkwrapDeps (deps, top, tree, seen) {
@@ -102,7 +139,7 @@ function shrinkwrapDeps (deps, top, tree, seen) {
   if (!seen) seen = new Set()
   if (seen.has(tree)) return
   seen.add(tree)
-  sortModules(tree.children).forEach(function (child) {
+  sortModules(tree.children.filter(child => !child.isAsset)).forEach(function (child) {
     if (child.fakeChild) {
       deps[moduleName(child)] = child.fakeChild
       return
@@ -121,8 +158,9 @@ function shrinkwrapDeps (deps, top, tree, seen) {
       // tarball and we can't (yet) create consistent tarballs from a stable
       // source.
       if (requested.type !== 'git') {
-        pkginfo.integrity = child.package._integrity
-        if (!pkginfo.integrity && child.package._shasum) {
+        if (child.package._integrity) {
+          pkginfo.integrity = child.package._integrity
+        } else if (child.package._shasum) {
           pkginfo.integrity = ssri.fromHex(child.package._shasum, 'sha1')
         }
       }
@@ -169,9 +207,9 @@ function save (dir, pkginfo, opts, cb) {
   // copy the keys over in a well defined order
   // because javascript objects serialize arbitrarily
   BB.join(
-    checkPackageFile(dir, SHRINKWRAP),
-    checkPackageFile(dir, PKGLOCK),
-    checkPackageFile(dir, 'package.json'),
+    readPackageFile(dir, SHRINKWRAP),
+    readPackageFile(dir, PKGLOCK),
+    readPackageFile(dir, 'package.json'),
     (shrinkwrap, lockfile, pkg) => {
       const info = (
         shrinkwrap ||
@@ -236,7 +274,7 @@ function updateLockfileMetadata (pkginfo, pkgJson) {
   return newPkg
 }
 
-function checkPackageFile (dir, name) {
+function readPackageFile (dir, name) {
   const file = path.resolve(dir, name)
   return readFile(
     file, 'utf8'
