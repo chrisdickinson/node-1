@@ -1,3 +1,4 @@
+// Flags: --mode=legacy
 'use strict';
 
 const common = require('../common');
