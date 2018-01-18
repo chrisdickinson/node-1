@@ -209,3 +209,6 @@ overrides:
   - files: [ "esm.md" ]
     parserOptions:
       sourceType: module
+  - files: [ "*.mjs" ]
+    parserOptions:
+      sourceType: module

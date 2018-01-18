@@ -1,9 +1,9 @@
+#!/usr/bin/env node --mode=esm
 /*eslint no-unused-vars: ["error", { "varsIgnorePattern": "assert" }]*/
-// This file is mjs and should be parsed as ESM.
 
 try {
   const assert = require('assert');
-  throw new Error('.mjs was not short-circuited to the ESM parse goal');
+  throw new Error('shebang hint of esm mode was not respected');
 } catch (err) {
   // This error is expected, because require should be unavailable in ESM.
 }

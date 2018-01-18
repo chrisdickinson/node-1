@@ -23,13 +23,12 @@ globals:
   WebAssembly: false
 
 overrides:
-  - files: [ "es-module/test-*-esm-*.js" ]
-    parserOptions:
-      sourceType: module
-    rules:
-      required-modules: 0
-  - files: [ "es-module/test-*-legacy-*.js"]
-    parserOptions:
-      sourceType: script
+  - files: [ "es-module/*"]
     rules:
        required-modules: 0
+  - files: [ "es-module/*esm*.js" ]
+    parserOptions:
+      sourceType: module
+  - files: [ "es-module/*legacy*.js"]
+    parserOptions:
+      sourceType: script
